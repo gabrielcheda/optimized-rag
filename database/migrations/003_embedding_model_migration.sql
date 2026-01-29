@@ -1,0 +1,80 @@
+-- Migration 003: Embedding Model Update
+-- Updates vector dimensions for text-embedding-3-small (1536D)
+-- Note: This migration documents the embedding model change but does NOT
+-- modify existing data. Old embeddings remain compatible as both models use 1536D.
+
+-- ==============================================================================
+-- EMBEDDING MODEL CHANGE DOCUMENTATION
+-- ==============================================================================
+-- Old model: text-embedding-ada-002 (1536 dimensions, $0.0001/1K tokens)
+-- New model: text-embedding-3-small (1536 dimensions, $0.00002/1K tokens)
+-- 
+-- Benefits:
+-- - 80% cost reduction ($120/month → $24/month)
+-- - Same dimensionality (1536D) = no schema changes needed
+-- - Better performance on specific domains
+--
+-- Action required:
+-- - Existing embeddings can remain (they're still valid)
+-- - New documents will use text-embedding-3-small automatically
+-- - Optional: Re-embed existing documents for consistency (see below)
+-- ==============================================================================
+
+-- NO SCHEMA CHANGES NEEDED (both models use 1536D vectors)
+
+-- ==============================================================================
+-- OPTIONAL: Re-embedding Existing Documents
+-- ==============================================================================
+-- If you want to re-embed all existing documents with the new model,
+-- run this Python script (not SQL):
+--
+-- from config import AppConfig
+-- from memory.embeddings import EmbeddingGenerator
+-- from database import get_cursor
+-- 
+-- config = AppConfig()
+-- emb_gen = EmbeddingGenerator(config)
+-- 
+-- with get_cursor() as cur:
+--     # Get all chunks
+--     cur.execute("SELECT id, chunk_text FROM document_chunks")
+--     chunks = cur.fetchall()
+--     
+--     # Re-embed each chunk
+--     for chunk_id, text in chunks:
+--         new_embedding = emb_gen.generate_embedding(text, use_cache=False)
+--         cur.execute(
+--             "UPDATE document_chunks SET embedding = %s WHERE id = %s",
+--             (new_embedding, chunk_id)
+--         )
+--     
+--     # Do the same for archival_memories
+--     cur.execute("SELECT id, content FROM archival_memories")
+--     memories = cur.fetchall()
+--     
+--     for mem_id, content in memories:
+--         new_embedding = emb_gen.generate_embedding(content, use_cache=False)
+--         cur.execute(
+--             "UPDATE archival_memories SET embedding = %s WHERE id = %s",
+--             (new_embedding, mem_id)
+--         )
+-- 
+-- print("Re-embedding complete!")
+-- ==============================================================================
+
+-- Update statistics after potential re-embedding
+ANALYZE document_chunks;
+ANALYZE archival_memories;
+
+-- Verify embedding dimensions (should be 1536 for both models)
+-- SELECT 
+--     'document_chunks' as table_name,
+--     vector_dims(embedding) as dimensions,
+--     COUNT(*) as row_count
+-- FROM document_chunks
+-- UNION ALL
+-- SELECT 
+--     'archival_memories' as table_name,
+--     vector_dims(embedding) as dimensions,
+--     COUNT(*) as row_count
+-- FROM archival_memories;
