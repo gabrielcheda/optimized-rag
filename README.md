@@ -441,52 +441,225 @@ Comando interativo com histórico.
 
 ## ⚙️ Configuração
 
-### **Principais Settings** ([config.py](config.py))
+Todas as configurações estão em [config.py](config.py) e podem ser sobrescritas via arquivo `.env`.
 
-**LLM & Embeddings**:
+### **🤖 OpenAI & LLM**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `openai_api_key` | - | **Obrigatório**. Chave da API OpenAI |
+| `llm_model` | `gpt-4o-mini` | Modelo LLM para geração de respostas |
+| `embedding_model` | `text-embedding-3-small` | Modelo para embeddings (80% economia vs ada-002) |
+| `reranking_embedding_model` | `text-embedding-3-large` | Modelo para reranking (maior qualidade) |
+
+**Por que `text-embedding-3-small`?** Oferece 80% de redução de custo vs `ada-002` com qualidade similar para retrieval semântico.
+
+---
+
+### **📚 RAG - Document Processing**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `chunk_size` | `1200` | Tamanho dos chunks (tokens). **↑** de 1000 → 1200 para melhor contexto |
+| `chunk_overlap` | `150` | Overlap entre chunks. **↓** de 200 → 150 (economia 15%) |
+| `semantic_similarity_threshold` | `0.7` | Threshold para semantic chunking (0-1) |
+
+**Trade-off**: Chunks maiores = mais contexto por chunk, mas menos granularidade. Overlap menor = economia, mas risco de perder contexto de fronteira.
+
+---
+
+### **🔍 RAG - Retrieval & Reranking**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `mmr_lambda` | `0.7` | Balance relevância (1.0) vs diversidade (0.0) no MMR |
+| `rrf_k` | `60` | Constante K do Reciprocal Rank Fusion. ↑ = mais penalização de ranks baixos |
+| `relevance_threshold` | `0.75` | **Threshold crítico**: Score mínimo para aceitar documento. **↑** de 0.6 → 0.75 (anti-alucinação) |
+| `max_reretrieve_attempts` | `2` | Tentativas de re-retrieval se Self-RAG detectar baixa qualidade |
+| `enable_cross_encoder` | `True` | Habilita reranking neural (cross-encoder/ms-marco-MiniLM-L-6-v2) |
+| `cross_encoder_model` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Modelo de cross-encoder para reranking |
+
+**Como funciona `mmr_lambda`**:
+- `0.7` = 70% relevância + 30% diversidade
+- `1.0` = só relevância (pode ter redundância)
+- `0.0` = só diversidade (pode perder relevância)
+
+---
+
+### **🗜️ Context Compression**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_context_compression` | `True` | Habilita compressão para reduzir tokens mantendo qualidade |
+| `context_compression_max_tokens` | `2000` | Limite de tokens após compressão |
+| `context_compression_sentences_per_doc` | `8` | Sentenças mantidas por documento. **↑** de 5 → 8 (melhor cobertura) |
+
+**Por que comprimir?** Reduz custo do LLM (~40% economia) mantendo informação relevante via TF-IDF + embeddings.
+
+---
+
+### **⏰ Temporal Awareness**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_temporal_boost` | `True` | Boost em documentos recentes para queries time-sensitive |
+| `recency_weight` | `0.15` | Peso do boost temporal (0-0.3). **↑** de 0.1 → 0.15 |
+| `recency_half_life_days` | `30` | Meia-vida do decay exponencial. Docs de 30 dias atrás = 50% do boost |
+
+**Fórmula**: `score_final = score_base × (1 + recency_weight × e^(-days/half_life))`
+
+---
+
+### **🕸️ Knowledge Graph**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_knowledge_graph` | `True` | ⚠️ Desabilitar se KG retorna 0 resultados (economia 6-9 queries/request, ~3s) |
+| `kg_max_hops` | `2` | Máximo de hops na traversal do grafo |
+| `kg_min_confidence` | `0.5` | Confiança mínima para aceitar triplas (subject-predicate-object) |
+
+**Quando desabilitar**: Se entity extraction falhar no upload ou KG consistentemente retornar 0 resultados.
+
+---
+
+### **🧠 Advanced Features**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_cot_reasoning` | `True` | Chain-of-Thought para queries complexas (multi-hop) |
+| `enable_query_refinement` | `True` | Refinamento iterativo de query se retrieval insuficiente |
+| `enable_self_rag` | `True` | Self-RAG evaluation (relevance/support/utility) |
+
+**CoT triggering**: Ativado quando `intent == MULTI_HOP` OU `query_length > 20 palavras` OU `confidence < 0.5`.
+
+---
+
+### **⚙️ DW-GRPO (Dynamic Weights)**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_dynamic_weights` | `True` | Aprende pesos adaptativos (semantic/keyword/temporal/KG) baseado em histórico |
+| `weight_learning_rate` | `0.01` | Taxa de adaptação dos pesos (0-1). ↓ = mudanças graduais |
+| `performance_tracking_window` | `100` | Janela de queries para calcular performance |
+| `enable_hierarchical_retrieval` | `True` | **Tier system**: Tier 1 (memory) → Tier 2 (+docs) → Tier 3 (+KG+web) |
+| `hierarchical_confidence_threshold` | `0.7` | Threshold para escalar pro próximo tier. Se `confidence < 0.7` → tier++ |
+| `enable_tier_3` | `True` | Habilita Tier 3 (KG + Web). $$$ Caro, mas necessário para queries complexas |
+| `enable_cost_tracking` | `True` | Rastreia custos API por operação |
+
+**Economia**: Tier 1 resolve ~40% queries, Tier 2 ~45%, Tier 3 só ~15% → grande economia vs sempre usar tudo.
+
+---
+
+### **🔥 Anti-Hallucination - Phase 1 (Critical)**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_post_generation_verification` | `True` | **Crítico**: Verifica claims após gerar resposta |
+| `enable_citation_validation` | `True` | Valida formato `[N]` e mapeamento citation → source |
+| `min_factuality_score` | `0.4` | Score mínimo de factuality (0-1). **↑** de 0.25 → 0.4 |
+| `require_both_scores_high` | `True` | Exige `faithfulness >= 0.6 AND factuality >= 0.4` |
+| `max_regeneration_attempts` | `2` | Tentativas de regenerar se verificação falhar |
+| `min_quality_score` | `0.5` | Score mínimo Self-RAG (0-1). **↑** de 0.3 → 0.5 |
+| `min_support_ratio` | `0.75` | % mínima de claims suportados. **↑** de 0.7 → 0.75 |
+
+**Verification loop**: Generate → Verify → Se `support_ratio < 0.75` → Regenerate (máx 2x).
+
+---
+
+### **🔥 Anti-Hallucination - Phase 2 (High Priority)**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_uncertainty_quantification` | `True` | Calcula uncertainty score (5 fatores: faithfulness, factuality, citations, context, hedging) |
+| `show_confidence_in_response` | `False` | Anexa confidence score na resposta pro usuário. Prod: `True` se HITL habilitado |
+| `enable_consistency_check` | `True` | Detecta contradições entre documentos (embeddings similarity) |
+
+**5-Factor Uncertainty**: `uncertainty = 1 - (0.30×faith + 0.25×fact + 0.20×cit + 0.15×ctx + 0.10×hedge)`
+
+---
+
+### **🔥 Anti-Hallucination - Phase 3 (Advanced)**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_temporal_validation` | `True` | Valida consistência temporal (datas, timelines) |
+| `enable_attribution_map` | `True` | Mapeia cada claim → documento fonte (~95% atribuição) |
+| `enable_human_in_the_loop` | `False` | **Prod: `True`**. Flagga para revisão humana se `uncertainty > 0.5` ou gray zone (0.4-0.6) |
+| `enable_ensemble_sampling` | `False` | Gera múltiplas respostas e escolhe melhor (caro, só queries críticas) |
+
+**HITL triggering**: `confidence < 0.4` (muito baixo) OU `0.4 <= confidence <= 0.6` (gray zone) OU inconsistências temporais.
+
+---
+
+### **📊 Evaluation & Monitoring**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `enable_metrics_logging` | `True` | Loga métricas (latency, costs, scores) |
+| `metrics_log_interval` | `10` | Intervalo de queries para log agregado |
+| `embedding_cache_size` | `1000` | LRU cache para embeddings (economia significativa) |
+
+---
+
+### **💾 Context Management**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `max_context_tokens` | `8000` | Contexto máximo total (todas as fontes) |
+| `token_allocation_system_prompt` | `500` | Tokens reservados para system prompt |
+| `token_allocation_core_memory` | `800` | Tokens para core memory (persona, facts) |
+| `token_allocation_function_definitions` | `700` | Tokens para definições de tools |
+| `token_allocation_retrieved_context` | `2000` | Tokens para contexto RAG recuperado |
+| `token_allocation_conversation` | `4000` | Tokens para histórico conversacional |
+| `context_warning_threshold` | `0.8` | Alerta quando atingir 80% do limite (paginação) |
+
+**Total**: 500 + 800 + 700 + 2000 + 4000 = 8000 tokens
+
+---
+
+### **🌐 Web Search (Optional)**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `tavily_api_key` | `""` | API key Tavily (opcional). Se vazio, usa DuckDuckGo (grátis mas menor qualidade) |
+
+**Tier 3 Web Search**: Só acionado quando `enable_tier_3=True` E `confidence < hierarchical_confidence_threshold`.
+
+---
+
+### **🗄️ Database**
+
+| Configuração | Padrão | Descrição |
+|-------------|---------|-----------|
+| `postgres_uri` | - | **Obrigatório**. PostgreSQL connection URI (`postgresql://user:pass@host:port/db`) |
+
+---
+
+### **🎯 Recomendações de Tuning**
+
+**Para maximizar qualidade (custo mais alto)**:
 ```python
-llm_model = "gpt-4o-mini"
-embedding_model = "text-embedding-3-small"  # 80% economia
-reranking_embedding_model = "text-embedding-3-large"
+relevance_threshold = 0.85  # Muito estrito
+chunk_size = 1500           # Chunks maiores
+enable_tier_3 = True        # Sempre usar KG + Web
+min_support_ratio = 0.80    # 80% claims suportados
 ```
 
-**RAG**:
+**Para minimizar custo (qualidade aceitável)**:
 ```python
-chunk_size = 1200  # Otimizado (era 1000)
-chunk_overlap = 150  # Reduzido (era 200)
-relevance_threshold = 0.75  # Aumentado (era 0.6)
-max_reretrieve_attempts = 2
+relevance_threshold = 0.65         # Mais leniente
+enable_knowledge_graph = False     # Economia 6-9 queries
+enable_tier_3 = False              # Só Tier 1+2
+context_compression_sentences_per_doc = 5  # Menos sentenças
+hierarchical_confidence_threshold = 0.6    # Escala tier mais cedo
 ```
 
-**DW-GRPO**:
+**Balanced (padrão atual)**:
 ```python
-enable_dynamic_weights = True
+relevance_threshold = 0.75
 enable_hierarchical_retrieval = True
-hierarchical_confidence_threshold = 0.7
-enable_tier_3 = True  # KG + Web (caro)
-enable_knowledge_graph = False  # Desabilitado (otimização)
-```
-
-**Anti-Hallucination** (Phase 1):
-```python
+enable_dynamic_weights = True
 enable_post_generation_verification = True
-enable_citation_validation = True
-min_factuality_score = 0.4
-require_both_scores_high = True
-max_regeneration_attempts = 2
-```
-
-**Anti-Hallucination** (Phase 2):
-```python
-enable_uncertainty_quantification = True
-enable_consistency_check = True
-```
-
-**Anti-Hallucination** (Phase 3):
-```python
-enable_temporal_validation = True
-enable_attribution_map = True
-enable_human_in_the_loop = False  # Prod: True
 ```
 
 ---
@@ -510,32 +683,12 @@ enable_human_in_the_loop = False  # Prod: True
 
 ---
 
-## 🧪 Testes
-
-```bash
-# Run compliance tests
-python test_paper_compliance.py
-
-# Debug RAG components
-python debug_rag_components.py
-
-# Debug workflow
-python debug_workflow.py
-```
-
----
-
 ## 📝 Licença
 
 MIT License
 
 ---
 
-## 🤝 Contribuindo
-
-Pull requests são bem-vindos. Para mudanças grandes, abra uma issue primeiro.
-
----
 
 ## 📚 Referências
 
