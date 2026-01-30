@@ -12,6 +12,7 @@ import config
 from agent.state import MemGPTState
 from prompts.generate_response import CLARIFICATION_INSTRUCTION, FEW_SHOT_EXAMPLES, SYSTEM_PROMPT_TEMPLATE
 from rag.nodes.helpers import check_context_quality, enrich_context_with_memory
+from rag.citation_validator import CitationValidator
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,18 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
 
     answer = response.content if hasattr(response, "content") else str(response)
 
+    # Phase 1: Citation validation (if enabled)
+    citation_validation = {}
+    if config.ENABLE_CITATION_VALIDATION and source_map:
+        validator = CitationValidator(strict_mode=True)
+        citation_validation = validator.validate_citations(answer, source_map)
+        if not citation_validation["valid"]:
+            logger.warning(
+                f"Citation validation failed: {citation_validation.get('error', 'Unknown error')} "
+                f"(cited: {citation_validation.get('cited_sources', [])}, "
+                f"uncited: {citation_validation.get('uncited_count', 0)})"
+            )
+
     # Paper-compliant: Faithfulness Evaluation
     faithfulness = {}
     if agent.evaluator and state.final_context:
@@ -114,83 +127,72 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
         }
     elif agent.factuality_scorer:
         try:
-            # QUICK WIN: Early exit for high-confidence answers
-            faithfulness_score = faithfulness.get("score", 0)
-            if faithfulness_score > 0.85 and state.rerank_scores:
-                top_rerank_score = (
-                    max(state.rerank_scores.values()) if state.rerank_scores else 0
-                )
-                if top_rerank_score > 0.9:
-                    logger.info(
-                        f"High-confidence answer detected (faithfulness={faithfulness_score:.2f}, "
-                        f"rerank={top_rerank_score:.2f}). Skipping detailed factuality check (early exit)."
+            # Phase 2: All answers must pass factuality check (early exit removed)
+            factuality_result = agent.factuality_scorer.calculate_factuality_score(
+                query=state.user_input,
+                answer=answer,
+                retrieved_docs=state.final_context,
+                source_map=source_map,
+            )
+
+            # Phase 1: Stricter quality control - require BOTH scores if enabled
+            factuality_score = factuality_result["factuality_score"]
+            factuality_passed = factuality_result.get("passed", False)
+            
+            # Check if we should refuse (increased threshold from 0.25 to config.MIN_FACTUALITY_SCORE)
+            should_refuse = agent.factuality_scorer.should_refuse_answer(
+                factuality_score, threshold=config.MIN_FACTUALITY_SCORE
+            )
+            
+            # If REQUIRE_BOTH_SCORES_HIGH is enabled, require BOTH faithfulness AND factuality
+            if config.REQUIRE_BOTH_SCORES_HIGH:
+                both_low = (faithfulness_score < 0.7) and (factuality_score < 0.5)
+                if both_low or (should_refuse and not factuality_passed):
+                    auto_refused = True
+                    fallback_message = factuality_result["recommendation"]
+                    
+                    logger.warning(
+                        f"Auto-refusing answer - faithfulness: {faithfulness_score:.2f}, "
+                        f"factuality: {factuality_score:.2f} ({factuality_result['quality_level']})"
                     )
-                    factuality_result = {
-                        "factuality_score": faithfulness_score,
-                        "quality_level": "EXCELLENT",
-                        "passed": True,
-                        "method": "early_exit",
-                        "components": {
-                            "support_ratio": 1.0,
-                            "citation_coverage": 0.8,
-                            "retrieval_confidence": top_rerank_score,
+                    
+                    return {
+                        "agent_response": fallback_message,
+                        "messages": [{"role": "assistant", "content": fallback_message}],
+                        "faithfulness_score": {
+                            "score": 0.0,
+                            "reasoning": "Auto-refused due to low quality scores",
                         },
-                        "recommendation": answer,
+                        "factuality_score": factuality_result,
+                        "source_map": {},
+                        "tool_calls": [],
+                        "auto_refused": True,
+                        "citation_validation": citation_validation,
                     }
-                else:
-                    factuality_result = (
-                        agent.factuality_scorer.calculate_factuality_score(
-                            query=state.user_input,
-                            answer=answer,
-                            retrieved_docs=state.final_context,
-                            source_map=source_map,
-                        )
-                    )
             else:
-                factuality_result = agent.factuality_scorer.calculate_factuality_score(
-                    query=state.user_input,
-                    answer=answer,
-                    retrieved_docs=state.final_context,
-                    source_map=source_map,
-                )
-
-            # Auto-refuse low-quality answers (threshold: 0.25)
-            # BUT: Trust faithfulness score as fallback when it's high
-            faithfulness_override = faithfulness_score >= 0.7
-
-            if (
-                not factuality_result.get("passed", False)
-                and agent.factuality_scorer.should_refuse_answer(
-                    factuality_result["factuality_score"], threshold=0.25
-                )
-                and not faithfulness_override
-            ):  # Don't refuse if faithfulness is high
-                auto_refused = True
-                fallback_message = factuality_result["recommendation"]
-
-                logger.warning(
-                    f"Auto-refusing answer due to low factuality: "
-                    f"{factuality_result['factuality_score']:.2f} "
-                    f"({factuality_result['quality_level']})"
-                )
-
-                return {
-                    "agent_response": fallback_message,
-                    "messages": [{"role": "assistant", "content": fallback_message}],
-                    "faithfulness_score": {
-                        "score": 0.0,
-                        "reasoning": "Auto-refused due to low factuality",
-                    },
-                    "factuality_score": factuality_result,
-                    "source_map": {},
-                    "tool_calls": [],
-                    "auto_refused": True,
-                }
-            elif faithfulness_override and not factuality_result.get("passed", False):
-                logger.info(
-                    f"Trusting faithfulness score ({faithfulness_score:.2f}) over factuality "
-                    f"({factuality_result['factuality_score']:.2f}) - allowing answer through"
-                )
+                # Original behavior: refuse only if factuality is very low
+                if should_refuse and not factuality_passed:
+                    auto_refused = True
+                    fallback_message = factuality_result["recommendation"]
+                    
+                    logger.warning(
+                        f"Auto-refusing answer due to low factuality: "
+                        f"{factuality_score:.2f} ({factuality_result['quality_level']})"
+                    )
+                    
+                    return {
+                        "agent_response": fallback_message,
+                        "messages": [{"role": "assistant", "content": fallback_message}],
+                        "faithfulness_score": {
+                            "score": 0.0,
+                            "reasoning": "Auto-refused due to low factuality",
+                        },
+                        "factuality_score": factuality_result,
+                        "source_map": {},
+                        "tool_calls": [],
+                        "auto_refused": True,
+                        "citation_validation": citation_validation,
+                    }
 
             logger.info(
                 f"Factuality score: {factuality_result['factuality_score']:.3f} "
@@ -201,6 +203,93 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Factuality scoring failed: {e}")
             factuality_result = {}
+    
+    # Phase 2: Uncertainty quantification
+    uncertainty_info = {}
+    if config.ENABLE_UNCERTAINTY_QUANTIFICATION:
+        faithfulness_score = faithfulness.get("score", 0.0)
+        uncertainty_info = _quantify_uncertainty(
+            answer=answer,
+            faithfulness_score=faithfulness_score,
+            factuality_result=factuality_result,
+            citation_validation=citation_validation,
+            context_quality=context_quality
+        )
+        
+        # Log uncertainty level
+        if uncertainty_info.get("high_uncertainty", False):
+            logger.warning(
+                f"High uncertainty detected: {uncertainty_info['uncertainty_score']:.2f} - "
+                f"Reasons: {', '.join(uncertainty_info.get('reasons', []))}"
+            )
+        
+        # Optionally show confidence in response
+        if config.SHOW_CONFIDENCE_IN_RESPONSE and uncertainty_info.get("confidence_score"):
+            confidence_pct = int(uncertainty_info["confidence_score"] * 100)
+            answer = f"{answer}\n\n[Confidence: {confidence_pct}%]"
+    
+    # Phase 3: Temporal validation (if enabled)
+    temporal_validation = {}
+    if config.ENABLE_TEMPORAL_VALIDATION:
+        try:
+            from rag.temporal_validator import TemporalValidator
+            
+            temporal_validator = TemporalValidator()
+            temporal_validation = temporal_validator.validate_temporal_consistency(
+                answer=answer,
+                documents=state.final_context
+            )
+            
+            if not temporal_validation.get("valid", True):
+                logger.warning(
+                    f"Temporal validation failed: {temporal_validation.get('inconsistency_count', 0)} issues - "
+                    f"{temporal_validation.get('warning', 'Unknown')}"
+                )
+        except Exception as e:
+            logger.error(f"Temporal validation failed: {e}")
+            temporal_validation = {"valid": True, "error": str(e)}
+    
+    # Phase 3: Human-in-the-Loop detection (if enabled)
+    requires_human_review = False
+    hitl_reason = None
+    if config.ENABLE_HUMAN_IN_THE_LOOP and not auto_refused:
+        factuality_score = factuality_result.get("factuality_score", 1.0)
+        faithfulness_score = faithfulness.get("score", 1.0)
+        
+        # Gray zone detection: 0.4 <= score < 0.6
+        in_gray_zone = (
+            (0.4 <= factuality_score < 0.6) or 
+            (0.4 <= faithfulness_score < 0.6)
+        )
+        
+        # High uncertainty detection
+        high_uncertainty = uncertainty_info.get("high_uncertainty", False) if uncertainty_info else False
+        
+        # Temporal issues
+        temporal_issues = not temporal_validation.get("valid", True) if temporal_validation else False
+        
+        if in_gray_zone or high_uncertainty or temporal_issues:
+            requires_human_review = True
+            reasons = []
+            if in_gray_zone:
+                reasons.append(f"ambiguous quality (factuality: {factuality_score:.2f}, faithfulness: {faithfulness_score:.2f})")
+            if high_uncertainty:
+                reasons.append(f"high uncertainty ({uncertainty_info.get('uncertainty_score', 0):.2f})")
+            if temporal_issues:
+                reasons.append(f"temporal inconsistencies ({temporal_validation.get('inconsistency_count', 0)})")
+            
+            hitl_reason = "; ".join(reasons)
+            
+            logger.warning(
+                f"HUMAN-IN-THE-LOOP triggered: {hitl_reason}"
+            )
+            
+            # Add notice to response
+            answer = (
+                f"{answer}\n\n"
+                f"⚠️ **Note:** This response requires human review due to: {hitl_reason}. "
+                f"Please verify the information before using it."
+            )
 
     # Track LLM costs if cost tracker enabled
     if agent.cost_tracker and hasattr(response, "usage"):
@@ -223,4 +312,84 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
         "source_map": source_map,
         "tool_calls": tool_calls,
         "auto_refused": auto_refused,
+        "citation_validation": citation_validation,
+        "uncertainty_info": uncertainty_info if 'uncertainty_info' in locals() else {},
+        "temporal_validation": temporal_validation if 'temporal_validation' in locals() else {},
+        "requires_human_review": requires_human_review if 'requires_human_review' in locals() else False,
+        "hitl_reason": hitl_reason if 'hitl_reason' in locals() else None,
+    }
+
+
+def _quantify_uncertainty(
+    answer: str,
+    faithfulness_score: float,
+    factuality_result: Dict[str, Any],
+    citation_validation: Dict[str, Any],
+    context_quality: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Phase 2: Quantify uncertainty in generated response
+    
+    Args:
+        answer: Generated response
+        faithfulness_score: Faithfulness evaluation score
+        factuality_result: Factuality scoring results
+        citation_validation: Citation validation results
+        context_quality: Context quality assessment
+        
+    Returns:
+        Dict with uncertainty metrics and confidence score
+    """
+    uncertainty_reasons = []
+    uncertainty_score = 0.0
+    
+    # Factor 1: Low faithfulness (weight: 0.3)
+    if faithfulness_score < 0.7:
+        uncertainty_reasons.append(f"Low faithfulness ({faithfulness_score:.2f})")
+        uncertainty_score += 0.3 * (1.0 - faithfulness_score)
+    
+    # Factor 2: Low factuality (weight: 0.3)
+    factuality_score = factuality_result.get("factuality_score", 0.5)
+    if factuality_score < 0.5:
+        uncertainty_reasons.append(f"Low factuality ({factuality_score:.2f})")
+        uncertainty_score += 0.3 * (1.0 - factuality_score)
+    
+    # Factor 3: Poor citation coverage (weight: 0.2)
+    if not citation_validation.get("valid", True):
+        citation_count = citation_validation.get("citation_count", 0)
+        uncertainty_reasons.append(f"Poor citations ({citation_count} citations)")
+        uncertainty_score += 0.2
+    
+    # Factor 4: Weak context quality (weight: 0.2)
+    if not context_quality.get("sufficient", True):
+        max_score = context_quality.get("max_score", 0)
+        uncertainty_reasons.append(f"Weak context (max={max_score:.2f})")
+        uncertainty_score += 0.2 * (1.0 - max_score)
+    
+    # Factor 5: Hedging language detection
+    hedging_patterns = [
+        "might", "maybe", "possibly", "probably", "likely", "perhaps",
+        "it seems", "appears to", "could be", "may be", "uncertain",
+        "not sure", "unclear"
+    ]
+    hedging_count = sum(1 for pattern in hedging_patterns if pattern in answer.lower())
+    if hedging_count >= 3:
+        uncertainty_reasons.append(f"Hedging language ({hedging_count} instances)")
+        uncertainty_score += min(0.1 * hedging_count, 0.3)
+    
+    # Normalize uncertainty score (0-1)
+    uncertainty_score = min(uncertainty_score, 1.0)
+    
+    # Calculate confidence (inverse of uncertainty)
+    confidence_score = 1.0 - uncertainty_score
+    
+    # Determine if uncertainty is high (threshold: 0.4)
+    high_uncertainty = uncertainty_score >= 0.4
+    
+    return {
+        "uncertainty_score": round(uncertainty_score, 3),
+        "confidence_score": round(confidence_score, 3),
+        "high_uncertainty": high_uncertainty,
+        "reasons": uncertainty_reasons,
+        "hedging_count": hedging_count
     }

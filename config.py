@@ -70,6 +70,24 @@ class Settings(BaseSettings):
     enable_tier_3: bool = Field(default=True, description="Enable expensive Tier 3 (KG + Web)")
     enable_cost_tracking: bool = Field(default=True, description="Track API costs and savings")
     
+    # Anti-Hallucination Settings (PHASE 1: Critical Fixes)
+    enable_post_generation_verification: bool = Field(default=True, description="Verify claims after generation")
+    enable_citation_validation: bool = Field(default=True, description="Validate citation format and completeness")
+    min_factuality_score: float = Field(default=0.4, ge=0.0, le=1.0, description="Minimum factuality to accept (increased from 0.25)")
+    require_both_scores_high: bool = Field(default=True, description="Require both faithfulness AND factuality high")
+    max_regeneration_attempts: int = Field(default=2, description="Max times to regenerate failed responses")
+    
+    # Anti-Hallucination Settings (PHASE 2: High Priority)
+    enable_uncertainty_quantification: bool = Field(default=True, description="Calculate and show uncertainty scores")
+    show_confidence_in_response: bool = Field(default=False, description="Append confidence to response text")
+    enable_consistency_check: bool = Field(default=True, description="Check cross-document consistency")
+    
+    # Anti-Hallucination Settings (PHASE 3: Advanced Features)
+    enable_human_in_the_loop: bool = Field(default=False, description="Flag uncertain responses for review")
+    enable_attribution_map: bool = Field(default=True, description="Build claim-to-source attribution map")
+    enable_temporal_validation: bool = Field(default=True, description="Validate temporal consistency")
+    enable_ensemble_sampling: bool = Field(default=False, description="Generate multiple responses for critical queries")
+    
     # Evaluation & Monitoring
     enable_metrics_logging: bool = Field(default=True, description="Enable metrics logging")
     metrics_log_interval: int = Field(default=10, description="Log metrics every N queries")
@@ -146,6 +164,18 @@ ENABLE_HIERARCHICAL_RETRIEVAL = settings.enable_hierarchical_retrieval
 HIERARCHICAL_CONFIDENCE_THRESHOLD = settings.hierarchical_confidence_threshold
 ENABLE_TIER_3 = settings.enable_tier_3
 ENABLE_COST_TRACKING = settings.enable_cost_tracking
+ENABLE_POST_GENERATION_VERIFICATION = settings.enable_post_generation_verification
+ENABLE_CITATION_VALIDATION = settings.enable_citation_validation
+MIN_FACTUALITY_SCORE = settings.min_factuality_score
+REQUIRE_BOTH_SCORES_HIGH = settings.require_both_scores_high
+MAX_REGENERATION_ATTEMPTS = settings.max_regeneration_attempts
+ENABLE_UNCERTAINTY_QUANTIFICATION = settings.enable_uncertainty_quantification
+SHOW_CONFIDENCE_IN_RESPONSE = settings.show_confidence_in_response
+ENABLE_CONSISTENCY_CHECK = settings.enable_consistency_check
+ENABLE_HUMAN_IN_THE_LOOP = settings.enable_human_in_the_loop
+ENABLE_ATTRIBUTION_MAP = settings.enable_attribution_map
+ENABLE_TEMPORAL_VALIDATION = settings.enable_temporal_validation
+ENABLE_ENSEMBLE_SAMPLING = settings.enable_ensemble_sampling
 ENABLE_METRICS_LOGGING = settings.enable_metrics_logging
 METRICS_LOG_INTERVAL = settings.metrics_log_interval
 EMBEDDING_CACHE_SIZE = settings.embedding_cache_size
@@ -164,13 +194,13 @@ ARCHIVAL_SEARCH_RESULTS = 5  # Number of results to retrieve from archival memor
 RECALL_SEARCH_RESULTS = 10   # Number of conversation messages to retrieve
 EMBEDDING_BATCH_SIZE = 100   # Batch size for embedding generation
 
-# Self-RAG Settings
-MAX_CHARS_PER_DOC = 2000     # Maximum characters per document for claim verification
-MIN_QUALITY_SCORE = 0.3      # Minimum quality score threshold
-MIN_SUPPORT_RATIO = 0.7      # Minimum support ratio for anti-hallucination
+# Self-RAG Settings (PHASE 1: Increased thresholds for stricter quality control)
+MAX_CHARS_PER_DOC = 3000     # Increased from 2000 for better context matching
+MIN_QUALITY_SCORE = 0.5      # Increased from 0.3 for stricter quality control
+MIN_SUPPORT_RATIO = 0.75     # Increased from 0.7 for better hallucination prevention
 
 # Context Quality Settings
-MIN_AVG_RELEVANCE_SCORE = 0.2   # Minimum average relevance score for context quality
+MIN_AVG_RELEVANCE_SCORE = 0.35   # Increased from 0.2
 MIN_FOLLOW_UP_WORDS = 50        # Minimum words in recent response to skip document retrieval
 
 # CoT (Chain-of-Thought) Decision Thresholds

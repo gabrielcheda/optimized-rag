@@ -23,6 +23,10 @@ from .hierarchical_retriever import HierarchicalRetriever, RetrievalTier
 from .selective_reranker import SelectiveReranker
 from .factuality_scorer import FactualityScorer
 from .ensemble_verifier import EnsembleVerifier
+from .citation_validator import CitationValidator
+from .consistency_checker import ConsistencyChecker
+from .temporal_validator import TemporalValidator
+from .attribution_mapper import AttributionMapper
 
 __all__ = [
     'DataWrangler',
@@ -56,5 +60,9 @@ __all__ = [
     'RetrievalTier',
     'SelectiveReranker',
     'FactualityScorer',
-    'EnsembleVerifier'
+    'EnsembleVerifier',
+    'CitationValidator',
+    'ConsistencyChecker',
+    'TemporalValidator',
+    'AttributionMapper'
 ]

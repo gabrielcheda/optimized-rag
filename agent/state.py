@@ -97,3 +97,19 @@ class MemGPTState(BaseModel):
     token_breakdown: Dict[str, int] = Field(default_factory=dict)
     context_overflow: bool = Field(False)
     compression_stats: Dict[str, Any] = Field(default_factory=dict)
+    
+    # --- Anti-Hallucination Verification (Phase 1) ---
+    verification_passed: bool = Field(True, description="Whether post-generation verification succeeded")
+    support_ratio: float = Field(1.0, description="Ratio of verified claims to total claims")
+    regeneration_count: int = Field(0, description="Number of times response was regenerated")
+    citation_validation: Dict[str, Any] = Field(default_factory=dict, description="Citation validation results")
+    
+    # --- Anti-Hallucination Enhancement (Phase 2) ---
+    consistency_result: Dict[str, Any] = Field(default_factory=dict, description="Cross-document consistency check")
+    uncertainty_info: Dict[str, Any] = Field(default_factory=dict, description="Uncertainty quantification metrics")
+    
+    # --- Anti-Hallucination Advanced (Phase 3) ---
+    temporal_validation: Dict[str, Any] = Field(default_factory=dict, description="Temporal consistency validation")
+    requires_human_review: bool = Field(False, description="Whether response needs human review (HITL)")
+    hitl_reason: Optional[str] = Field(None, description="Reason for human review requirement")
+    attribution_map: Dict[str, Any] = Field(default_factory=dict, description="Claim-to-source attribution mapping")

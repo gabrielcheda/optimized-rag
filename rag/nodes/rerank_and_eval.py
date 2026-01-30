@@ -107,6 +107,42 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
             "confidence": 1.0,
             "should_reretrieve": False,
         }
+    
+    # Phase 2: Consistency checking (detect contradictions)
+    consistency_result = {}
+    if config.ENABLE_CONSISTENCY_CHECK and len(diverse_results) >= 2:
+        try:
+            from rag.consistency_checker import ConsistencyChecker
+            
+            consistency_checker = ConsistencyChecker(
+                embedding_service=agent.embedding_service,
+                similarity_threshold=0.85
+            )
+            consistency_result = consistency_checker.check_consistency(
+                documents=diverse_results,
+                query=query
+            )
+            
+            # If contradictions detected, adjust confidence
+            if not consistency_result.get("consistent", True):
+                contradiction_count = consistency_result.get("contradiction_count", 0)
+                logger.warning(
+                    f"Consistency check detected {contradiction_count} contradictions - "
+                    f"lowering confidence"
+                )
+                # Reduce retrieval confidence based on contradictions
+                original_confidence = retrieval_eval.get("confidence", 1.0)
+                consistency_penalty = min(contradiction_count * 0.15, 0.5)
+                retrieval_eval["confidence"] = max(original_confidence - consistency_penalty, 0.3)
+                retrieval_eval["consistency_warning"] = consistency_result.get("warning")
+            
+            logger.info(
+                f"Consistency check: {'PASSED' if consistency_result.get('consistent') else 'FAILED'} "
+                f"(score: {consistency_result.get('confidence', 0):.2f})"
+            )
+        except Exception as e:
+            logger.error(f"Consistency check failed: {e}")
+            consistency_result = {"consistent": True, "error": str(e)}
 
     # Embed semantic confidence into results
     semantic_confidence = retrieval_eval.get("confidence", 1.0)
@@ -192,4 +228,5 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
         "rag_context": rag_context,
         "compression_stats": compression_stats,
         "reretrieve_count": reretrieve_count,
+        "consistency_result": consistency_result if 'consistency_result' in locals() else {},
     }

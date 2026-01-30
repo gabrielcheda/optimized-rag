@@ -58,6 +58,8 @@ from rag.nodes import (
     route_query_node,
     should_use_cot,
     synthesize_multi_doc_node,
+    verify_response_node,
+    should_regenerate,
 )
 
 from rag.nodes.update_memory import update_memory_node
@@ -294,6 +296,7 @@ class MemGPTRAGAgent:
             self.context_compressor = ContextCompressor(
                 max_tokens=config.CONTEXT_COMPRESSION_MAX_TOKENS,
                 sentences_per_doc=config.CONTEXT_COMPRESSION_SENTENCES_PER_DOC,
+                embedding_service=self.embedding_service,  # Phase 2: Enable semantic scoring
             )
         else:
             self.context_compressor = None
@@ -351,6 +354,10 @@ class MemGPTRAGAgent:
             lambda s: generate_response_node(s, self),  # type: ignore
         )
         workflow.add_node(
+            "verify_response",
+            lambda s: verify_response_node(s, self),  # type: ignore
+        )  # Phase 1: Post-generation verification
+        workflow.add_node(
             "process_tool_calls",
             lambda s: process_tool_calls_node(s, self),  # type: ignore
         )
@@ -384,9 +391,19 @@ class MemGPTRAGAgent:
         # Synthesis always runs but may skip internally, then go to generate
         workflow.add_edge("synthesize_multi_doc", "generate_response")
 
-        # Paper-compliant: Query Refinement Conditional Loop with tool usage
+        # Phase 1: Post-generation verification (conditional: regenerate if verification fails)
         workflow.add_conditional_edges(
             "generate_response",
+            lambda s: should_regenerate(s, self),
+            {
+                "regenerate": "generate_response",  # Loop back for regeneration
+                "accept": "verify_response",  # Proceed to verification
+            },
+        )
+
+        # Paper-compliant: Query Refinement Conditional Loop with tool usage
+        workflow.add_conditional_edges(
+            "verify_response",
             lambda s: decide_next_action(s, self),
             {
                 "refine": "query_refinement",
@@ -474,6 +491,16 @@ class MemGPTRAGAgent:
             faithfulness_score={},
             retrieval_metrics={},
             ground_truth=None,
+            verification_passed=True,
+            support_ratio=1.0,
+            regeneration_count=0,
+            citation_validation={},
+            consistency_result={},
+            uncertainty_info={},
+            temporal_validation={},
+            requires_human_review=False,
+            hitl_reason=None,
+            attribution_map={},
         )
 
         # Run graph

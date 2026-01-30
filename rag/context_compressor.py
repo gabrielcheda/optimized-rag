@@ -9,12 +9,13 @@ Paper recommendation: Context compression is CRITICAL for:
 - Allowing more documents in context
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import logging
 import re
 
 import config
 from rag.models.intent_analysis import QueryIntent
+from memory.embeddings import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +23,34 @@ logger = logging.getLogger(__name__)
 class ContextCompressor:
     """Compresses context using relevance-based sentence selection"""
     
-    def __init__(self, max_tokens: int = 2000, sentences_per_doc: int = 5):
+    def __init__(
+        self, 
+        max_tokens: int = 2000, 
+        sentences_per_doc: int = 5,
+        embedding_service: EmbeddingService | None = None
+    ):
         """
         Initialize context compressor
         
         Args:
             max_tokens: Maximum tokens for compressed context
             sentences_per_doc: Number of top sentences to keep per document
+            embedding_service: Optional embedding service for semantic scoring (Phase 2)
         """
         self.max_tokens = max_tokens
         self.sentences_per_doc = sentences_per_doc
-        logger.info(f"ContextCompressor initialized: max_tokens={max_tokens}, sentences_per_doc={sentences_per_doc}")
+        self.embedding_service = embedding_service
+        
+        # Phase 2: Hybrid scoring (70% semantic + 30% lexical)
+        self.use_semantic_scoring = embedding_service is not None
+        self.semantic_weight = 0.7
+        self.lexical_weight = 0.3
+        
+        logger.info(
+            f"ContextCompressor initialized: max_tokens={max_tokens}, "
+            f"sentences_per_doc={sentences_per_doc}, "
+            f"semantic_scoring={'enabled' if self.use_semantic_scoring else 'disabled'}"
+        )
     
     def compress(
         self,
@@ -111,11 +129,15 @@ class ContextCompressor:
             if not sentences:
                 continue
             
-            # Score each sentence
-            scored_sentences = []
-            for sent in sentences:
-                score = self._score_sentence_relevance(query, sent)
-                scored_sentences.append((sent, score))
+            # Phase 2: Score each sentence using hybrid approach
+            if self.use_semantic_scoring:
+                scored_sentences = self._score_sentences_hybrid(query, sentences)
+            else:
+                # Fallback to lexical only
+                scored_sentences = []
+                for sent in sentences:
+                    score = self._score_sentence_lexical(query, sent)
+                    scored_sentences.append((sent, score))
             
             # Select top sentences
             scored_sentences.sort(key=lambda x: x[1], reverse=True)
@@ -173,7 +195,74 @@ class ContextCompressor:
         
         return sentences
     
-    def _score_sentence_relevance(self, query: str, sentence: str) -> float:
+    def _score_sentences_hybrid(self, query: str, sentences: List[str]) -> List[Tuple[str, float]]:
+        """
+        Phase 2: Score sentences using hybrid semantic + lexical approach
+        
+        Args:
+            query: User query
+            sentences: List of sentences to score
+            
+        Returns:
+            List of (sentence, score) tuples
+        """
+        try:
+            # Type guard: ensure embedding_service is available
+            if not self.embedding_service:
+                raise ValueError("Embedding service not available")
+            
+            # Compute query embedding
+            query_embedding = self.embedding_service.generate_embedding(query)
+            
+            # Compute sentence embeddings in batch
+            sentence_embeddings = self.embedding_service.generate_embeddings_batch(sentences)
+            
+            scored = []
+            for sent, sent_emb in zip(sentences, sentence_embeddings):
+                # Semantic score (cosine similarity)
+                semantic_score = self._cosine_similarity(query_embedding, sent_emb)
+                
+                # Lexical score (keyword overlap)
+                lexical_score = self._score_sentence_lexical(query, sent)
+                
+                # Hybrid score (70% semantic + 30% lexical)
+                hybrid_score = (
+                    self.semantic_weight * semantic_score + 
+                    self.lexical_weight * lexical_score
+                )
+                
+                scored.append((sent, hybrid_score))
+            
+            return scored
+            
+        except Exception as e:
+            logger.error(f"Semantic scoring failed, falling back to lexical: {e}")
+            # Fallback to lexical scoring
+            return [(sent, self._score_sentence_lexical(query, sent)) for sent in sentences]
+    
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """
+        Calculate cosine similarity between two vectors
+        
+        Args:
+            vec1: First vector
+            vec2: Second vector
+            
+        Returns:
+            Similarity score (0-1)
+        """
+        import math
+        
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)
+    
+    def _score_sentence_lexical(self, query: str, sentence: str) -> float:
         """
         Score sentence relevance to query
         

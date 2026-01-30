@@ -38,6 +38,7 @@ from .rewrite_query import rewrite_query_node
 from .route_query import route_query_node
 from .synthesize_multi_doc import synthesize_multi_doc_node
 from .update_memory import update_memory_node
+from .verify_response import verify_response_node, should_regenerate
 
 __all__ = [
     # Node functions
@@ -50,6 +51,7 @@ __all__ = [
     "retrieve_rag_node",
     "rerank_and_eval_node",
     "generate_response_node",
+    "verify_response_node",
     "chain_of_thought_node",
     "synthesize_multi_doc_node",
     "query_refinement_node",
@@ -59,6 +61,7 @@ __all__ = [
     "should_use_cot",
     "decide_next_action",
     "should_refine_query",
+    "should_regenerate",
     # Helper functions
     "format_context_with_citations",
     "check_context_quality",
