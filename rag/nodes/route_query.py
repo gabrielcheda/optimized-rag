@@ -17,7 +17,7 @@ def route_query_node(state: MemGPTState, agent) -> Dict[str, Any]:
     query = state.rewritten_query if state.rewritten_query else state.user_input
     intent = state.query_intent
     
-    # OPTIMIZATION: Smart routing decision - check if recall is sufficient before hitting documents
+    # Smart routing: check if recall is sufficient before hitting documents
     # This saves embeddings + retrieval costs when answer is already in recent conversation
     needs_document_retrieval = should_retrieve_documents(
         query=query,

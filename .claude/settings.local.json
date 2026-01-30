@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\gabri\\\\Desktop\\\\memGPT\" -Recurse -Name)",
+      "Bash(Select-Object -First 100)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

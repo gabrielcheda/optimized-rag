@@ -7,8 +7,7 @@ System1-System2 Paper Compliance: Persistent Feedback Loop
 import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 import hashlib
 import json
 

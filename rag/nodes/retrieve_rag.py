@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 
 def retrieve_rag_node(state: MemGPTState, agent) -> Dict[str, Any]:
     """Retrieve from RAG sources (intent-aware)"""
-    # OPTIMIZATION: Check if document retrieval is needed
+    # Check if document retrieval is needed
     needs_docs = getattr(state, "needs_document_retrieval", True)
 
     if not needs_docs:
-        logger.info("OPTIMIZATION: Skipping document retrieval (recall sufficient)")
+        logger.info("Skipping document retrieval (recall sufficient)")
 
         # FIX: For clarification, use ALL recall messages as context
         # (User messages contain the questions we need to find)
@@ -103,7 +103,7 @@ def retrieve_rag_node(state: MemGPTState, agent) -> Dict[str, Any]:
                 agent_id=state.agent_id, query=clean_kg_query
             )
             # Convert KG results to standard format
-            for kg_item in kg_entities[:5]:
+            for kg_item in kg_entities[:config.KG_RESULT_LIMIT]:
                 kg_results.append(
                     {
                         "content": f"{kg_item['path']} (confidence: {kg_item['confidence']:.2f})",

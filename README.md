@@ -148,9 +148,6 @@ memgpt/
 ├── requirements.txt          # Python dependencies (30+ packages)
 ├── main.py                   # Main entry point (interactive chat)
 ├── setup_db.py              # Database initialization script
-├── demo_completo.py         # Complete demonstration
-├── exemplo_upload.py        # File upload examples
-├── examples_rag.py          # RAG feature examples
 │
 ├── database/                 # Database layer
 │   ├── connection.py        # Connection pooling (ThreadedConnectionPool)
@@ -296,43 +293,7 @@ Chat commands:
 - `memory` - View current core memory
 - `quit` - Exit
 
-### Option 2: Complete Demo
-
-```bash
-python demo_completo.py
-```
-
-Demonstrates:
-- Database connection
-- Knowledge base creation
-- Document upload and indexing
-- Hybrid search
-- RAG-enhanced conversation
-- Self-RAG evaluation
-- Statistics and web search
-
-### Option 3: RAG Examples
-
-```bash
-python examples_rag.py
-```
-
-Shows:
-- Document upload and search
-- Hybrid retrieval with reranking
-- Self-RAG evaluation
-- Query routing
-- Full RAG conversation flow
-
-### Option 4: File Upload Examples
-
-```bash
-python exemplo_upload.py
-```
-
-Demonstrates 8 ways to upload and manage documents.
-
-### Option 5: Quality Tests
+### Option 2: Quality Tests
 
 ```bash
 python tests\quality_tests.py
@@ -1384,7 +1345,6 @@ workflow.add_node("custom_node", custom_processing)
    - Create module in `rag/` directory
    - Export in `rag/__init__.py`
    - Update `agent/rag_graph.py` to integrate
-   - Add examples to `examples_rag.py`
 
 2. **New Tool:**
    - Define in `agent/rag_tools.py`
@@ -1559,9 +1519,8 @@ MIT License - See LICENSE file for details
 
 For issues and questions:
 1. Check this README and other documentation files
-2. Review `examples_rag.py` for usage patterns
-3. Run `python demo_completo.py` for complete demonstration
-4. Check logs in console for detailed error messages
+2. Run `python main.py` for interactive chat
+3. Check logs in console for detailed error messages
 
 ## 🎉 Quick Reference
 
@@ -1576,9 +1535,6 @@ python setup_db.py
 
 # Interactive chat (with all optimizations enabled)
 python main.py
-
-# Complete demonstration
-python demo_completo.py
 
 # Run quality tests
 python tests\quality_tests.py
@@ -1654,32 +1610,18 @@ print(f"Quality score: {response['quality_score']:.2f}")
 **Impact**: 33% cost reduction, 68% fewer hallucinations, 12% better success rate ✅
 
 ---
+
+## Quick Start
+
+```bash
 # Setup
 pip install -r requirements.txt
 python setup_db.py
 
 # Run
 python main.py              # Interactive chat
-python demo_completo.py     # Full demo
-python examples_rag.py      # RAG examples
-python exemplo_upload.py    # Upload examples
-python tests\quality_tests.py  # Quality tests
-
-# Key Files
-config.py                   # Configuration
-agent/rag_graph.py         # Main agent
-rag/                       # RAG components
-database/schemas.sql       # Database schema
 ```
 
 **System Status:** ✅ **100% Functional and Ready to Use!**
 
-Built with ❤️ using Python, LangGraph, PostgreSQL, and OpenAI
-
----
-
-**Version:** 1.0  
-**Last Updated:** January 2026  
-**Total Lines of Code:** ~4,000  
-**Components:** 25+ files, 10 RAG modules, 6 database tables
-"# optimized-rag" 
+Built with ❤️ using Python, LangGraph, PostgreSQL, and OpenAI 

@@ -43,6 +43,92 @@ class DocumentStore:
         
         self._ensure_tables()
     
+    def _check_dimension_mismatch(self, cur) -> bool:
+        """Check if document_chunks table has wrong embedding dimension
+        
+        Returns:
+            True if table needs recreation, False otherwise
+        """
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'document_chunks' AND column_name = 'embedding'
+        """)
+        
+        if not cur.fetchone():
+            return False
+        
+        # Get current dimension
+        cur.execute("""
+            SELECT format_type(atttypid, atttypmod) as formatted_type
+            FROM pg_attribute
+            WHERE attrelid = 'document_chunks'::regclass AND attname = 'embedding'
+        """)
+        result = cur.fetchone()
+        
+        if not result:
+            return False
+        
+        formatted_type = result[0]
+        logger.info(f"Existing embedding type: {formatted_type}, required: vector({self.embedding_dim})")
+        
+        # Extract dimension from formatted type (e.g., "vector(1536)" -> 1536)
+        import re
+        match = re.search(r'vector\((\d+)\)', formatted_type)
+        
+        if match:
+            existing_dim = int(match.group(1))
+            if existing_dim != self.embedding_dim:
+                logger.warning(
+                    f"⚠️  Dimension mismatch: {existing_dim} != {self.embedding_dim}"
+                )
+                return True
+            else:
+                logger.info("✓ Table dimension matches")
+        
+        return False
+    
+    def _recreate_chunks_table_if_needed(self, cur, needs_recreation: bool):
+        """Recreate document_chunks table if dimension mismatch detected"""
+        if not needs_recreation:
+            return
+        
+        # Check if table has data
+        cur.execute("SELECT COUNT(*) FROM document_chunks")
+        chunk_count = cur.fetchone()[0]
+        
+        if chunk_count > 0:
+            raise ValueError(
+                f"Cannot drop table with {chunk_count} chunks. "
+                f"Manually migrate data or use same embedding dimension."
+            )
+        
+        cur.execute("DROP TABLE IF EXISTS document_chunks CASCADE")
+        logger.info("Dropped empty document_chunks table for recreation")
+    
+    def _create_indexes(self, cur):
+        """Create optimized indexes for document_chunks table"""
+        # Vector index with lists=10 for 32MB maintenance_work_mem compatibility
+        cur.execute("DROP INDEX IF EXISTS document_chunks_embedding_idx")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
+            ON document_chunks USING ivfflat (embedding vector_cosine_ops)
+            WITH (lists = 10)
+        """)
+        
+        # B-tree index for agent_id filtering
+        cur.execute("DROP INDEX IF EXISTS document_chunks_agent_embedding_idx")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS document_chunks_agent_id_idx
+            ON document_chunks(agent_id)
+        """)
+        
+        # Temporal index for recency boosting
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS document_chunks_created_at_idx
+            ON document_chunks(created_at DESC)
+        """)
+    
     def _ensure_tables(self):
         """Create tables if not exist"""
         try:
@@ -52,9 +138,9 @@ class DocumentStore:
                 # Try to increase maintenance_work_mem for index creation
                 try:
                     cur.execute("SET LOCAL maintenance_work_mem = '64MB'")
-                    logger.info("Temporarily increased maintenance_work_mem to 64MB for index creation")
+                    logger.info("Increased maintenance_work_mem to 64MB")
                 except Exception as mem_e:
-                    logger.warning(f"Could not increase maintenance_work_mem: {mem_e}. Using default.")
+                    logger.warning(f"Could not increase maintenance_work_mem: {mem_e}")
                 
                 # Documents table
                 cur.execute("""
@@ -71,72 +157,9 @@ class DocumentStore:
                     )
                 """)
                 
-                # Check if document_chunks table exists with wrong dimensions
-                cur.execute("""
-                    SELECT column_name, udt_name, character_maximum_length
-                    FROM information_schema.columns
-                    WHERE table_name = 'document_chunks' AND column_name = 'embedding'
-                """)
-                existing_col = cur.fetchone()
-                
-                needs_recreation = False
-                if existing_col:
-                    # Check dimension from column type using format_type (more reliable)
-                    cur.execute("""
-                        SELECT 
-                            format_type(atttypid, atttypmod) as formatted_type,
-                            atttypmod - 4 as raw_dimension
-                        FROM pg_attribute
-                        WHERE attrelid = 'document_chunks'::regclass
-                        AND attname = 'embedding'
-                    """)
-                    type_result = cur.fetchone()
-                    
-                    if type_result:
-                        formatted_type, raw_dim = type_result
-                        logger.info(f"Existing table embedding type: {formatted_type} (raw_dim={raw_dim})")
-                        logger.info(f"Required embedding dimension: {self.embedding_dim}")
-                        
-                        # Extract dimension from formatted type (e.g., "vector(1536)" -> 1536)
-                        import re
-                        match = re.search(r'vector\((\d+)\)', formatted_type)
-                        if match:
-                            existing_dim = int(match.group(1))
-                            if existing_dim != self.embedding_dim:
-                                logger.warning(
-                                    f"⚠️  document_chunks table has wrong embedding dimension "
-                                    f"({existing_dim} instead of {self.embedding_dim}). "
-                                    f"Recreating table to fix dimension mismatch..."
-                                )
-                                needs_recreation = True
-                            else:
-                                logger.info("✓ Table dimension matches, no recreation needed")
-                        else:
-                            logger.warning(f"Could not parse dimension from type: {formatted_type}")
-                
-                # Recreate table if dimension mismatch
-                if needs_recreation:
-                    # SAFETY: Check if table has data before dropping
-                    cur.execute("SELECT COUNT(*) FROM document_chunks")
-                    chunk_count = cur.fetchone()[0]
-                    
-                    if chunk_count > 0:
-                        logger.error(
-                            f"⚠️  CANNOT DROP TABLE: {chunk_count} chunks would be lost! "
-                            f"Please manually migrate data or use a different embedding dimension."
-                        )
-                        logger.error(
-                            f"   Current table dimension: see above"
-                            f"   Required dimension: {self.embedding_dim}"
-                        )
-                        raise ValueError(
-                            f"Table dimension mismatch but table contains {chunk_count} chunks. "
-                            f"Cannot auto-recreate to prevent data loss. "
-                            f"Either: 1) Use same embedding dimension, or 2) Manually migrate data."
-                        )
-                    
-                    cur.execute("DROP TABLE IF EXISTS document_chunks CASCADE")
-                    logger.info("Dropped document_chunks table for recreation (table was empty)")
+                # Check dimension and recreate if needed
+                needs_recreation = self._check_dimension_mismatch(cur)
+                self._recreate_chunks_table_if_needed(cur, needs_recreation)
                 
                 # Document chunks table
                 cur.execute(f"""
@@ -152,31 +175,8 @@ class DocumentStore:
                     )
                 """)
                 
-                # OPTIMIZATION: lists=10 for compatibility with 32MB maintenance_work_mem
-                # Note: lists=200 requires 63MB, lists=500 requires 157MB
-                # Supabase free tier and most default PostgreSQL configs have 32MB limit
-                # Drop old index if exists to recreate with new parameters
-                cur.execute("DROP INDEX IF EXISTS document_chunks_embedding_idx")
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
-                    ON document_chunks
-                    USING ivfflat (embedding vector_cosine_ops)
-                    WITH (lists = 10)
-                """)
-                
-                # OPTIMIZATION: Regular B-tree index for agent_id filtering
-                # NOTE: Cannot use INCLUDE (embedding) because vector(1536) = 6144 bytes > 2704 byte limit
-                cur.execute("DROP INDEX IF EXISTS document_chunks_agent_embedding_idx")  # Drop old problematic index
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS document_chunks_agent_id_idx
-                    ON document_chunks(agent_id)
-                """)
-                
-                # OPTIMIZATION: Temporal index for recency boosting
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS document_chunks_created_at_idx
-                    ON document_chunks(created_at DESC)
-                """)
+                # Create indexes
+                self._create_indexes(cur)
                 
                 cur.connection.commit()
                 logger.info("Document tables and indexes created successfully")
@@ -185,10 +185,8 @@ class DocumentStore:
             logger.error(f"Table creation error: {e}")
             if "maintenance_work_mem" in str(e):
                 logger.error(
-                    "⚠️  PostgreSQL maintenance_work_mem is too low. "
-                    "To fix, increase it in postgresql.conf or run: "
-                    "ALTER SYSTEM SET maintenance_work_mem = '64MB'; "
-                    "Then reload PostgreSQL configuration."
+                    "⚠️  PostgreSQL maintenance_work_mem too low. "
+                    "Run: ALTER SYSTEM SET maintenance_work_mem = '64MB';"
                 )
             raise
     

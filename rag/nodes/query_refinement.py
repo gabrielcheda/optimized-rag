@@ -8,7 +8,10 @@ from typing import Dict, Any
 from agent.state import MemGPTState
 from langchain_core.messages import SystemMessage, HumanMessage
 from rag.nodes.helpers import is_non_english, translate_to_english
-
+from prompts.query_refinement_prompts import (
+    REFINEMENT_SYSTEM_PROMPT,
+    REFINEMENT_PROMPT_TEMPLATE
+)
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +26,7 @@ def query_refinement_node(state: MemGPTState, agent) -> Dict[str, Any]:
     previous_context = state.rag_context
     refinement_count = state.refinement_count
     
-    # OPTIMIZATION: Early exit if previous refinement didn't improve score
+    # Early exit if previous refinement didn't improve score
     # Prevents redundant refinements when quality isn't improving
     retrieved_docs = state.retrieved_documents or []
     if refinement_count > 0 and retrieved_docs:
@@ -48,31 +51,18 @@ def query_refinement_node(state: MemGPTState, agent) -> Dict[str, Any]:
         # Store current top score for next iteration comparison
         current_top_score = max(d.get('score', 0) for d in retrieved_docs[:5]) if retrieved_docs else 0
         
-        refinement_prompt = f"""The previous query didn't retrieve sufficient information.
-
-Original Query: {query}
-
-Previous Context Retrieved:
-{previous_context[:500]}...
-
-Task: Reformulate the query to retrieve missing information. Consider:
-1. Are there alternative phrasings or synonyms?
-2. Are there specific aspects not covered?
-3. Should we break down the query into sub-questions?
-
-Provide a refined query that addresses the gaps:"""
+        refinement_prompt = REFINEMENT_PROMPT_TEMPLATE.format(
+            query=query,
+            previous_context=previous_context[:500] + "..."
+        )
         
         messages = [
-            SystemMessage(content="You are a query refinement system. Reformulate queries to improve retrieval."),
+            SystemMessage(content=REFINEMENT_SYSTEM_PROMPT),
             HumanMessage(content=refinement_prompt)
         ]
         
         response = agent.llm.invoke(messages)
         refined_query = response.content if hasattr(response, 'content') else str(response)
-        
-        # Ensure refined_query is a string (type safety)
-        if not isinstance(refined_query, str):
-            refined_query = str(refined_query)
         
         # CRITICAL: Translate non-English refined queries to English
         if is_non_english(refined_query):

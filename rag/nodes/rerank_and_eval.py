@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
     """Rerank and evaluate retrieval quality (Paper-compliant: post-retrieval)"""
-    # OPTIMIZATION: Skip reranking if context already prepared (recall-only mode)
+    # Skip reranking if context already prepared (recall-only mode)
     if not getattr(state, "needs_document_retrieval", True) and state.final_context:
-        logger.info("OPTIMIZATION: Skipping rerank (using recall context directly)")
+        logger.info("Skipping rerank (using recall context directly)")
         return {
             "retrieved_documents": state.retrieved_documents,
             "final_context": state.final_context,
@@ -36,7 +36,7 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
     query = translated if translated else state.user_input
     intent_enum = state.query_intent or QueryIntent.QUESTION_ANSWERING
 
-    # 🔥 CRITICAL FIX: Combine ALL sources including archival and recall
+    # Combine ALL sources including archival and recall
     all_results = []
 
     # Add archival memory results (long-term knowledge)
@@ -57,10 +57,10 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
             "quality_eval": {"is_relevant": False, "should_reretrieve": False},
         }
 
-    # OPTIMIZATION: Selective Reranking (20-40% cost reduction)
+    # Selective Reranking: use cheap BM25 first, then expensive cross-encoder if needed
     if agent.selective_reranker:
         reranked = agent.selective_reranker.rerank(
-            query=query, results=all_results, intent=intent_enum, top_k=15
+            query=query, results=all_results, intent=intent_enum, top_k=config.RERANK_TOP_K_DEFAULT
         )
 
         # Log statistics
@@ -76,17 +76,17 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
         # Paper-compliant: Cross-Encoder Reranking (System2 - superior accuracy)
         if agent.cross_encoder and agent.cross_encoder.is_available():
             logger.info("Applying Cross-Encoder reranking (System2)")
-            reranked = agent.cross_encoder.rerank(query, reranked, top_k=15)
-            logger.info(f"Cross-Encoder reranked to top 15 results")
+            reranked = agent.cross_encoder.rerank(query, reranked, top_k=config.RERANK_TOP_K_DEFAULT)
+            logger.info(f"Cross-Encoder reranked to top {config.RERANK_TOP_K_DEFAULT} results")
 
     # Apply MMR diversity with embeddings
-    if len(reranked) > 5:
+    if len(reranked) > config.MMR_DIVERSITY_TOP_K:
         try:
             diverse_results = apply_mmr(
                 query=query,
                 documents=reranked,
                 lambda_=config.MMR_LAMBDA,
-                k=5,
+                k=config.MMR_DIVERSITY_TOP_K,
                 embedding_service=agent.embedding_service,
             )
             logger.info(
@@ -94,9 +94,9 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
             )
         except Exception as e:
             logger.warning(f"MMR failed, using top results: {e}")
-            diverse_results = reranked[:5]
+            diverse_results = reranked[:config.MMR_DIVERSITY_TOP_K]
     else:
-        diverse_results = reranked[:5]
+        diverse_results = reranked[:config.MMR_DIVERSITY_TOP_K]
 
     # Self-RAG evaluation
     if config.ENABLE_SELF_RAG:
@@ -108,15 +108,15 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
             "should_reretrieve": False,
         }
 
-    # OPTIMIZATION: Embed semantic confidence into results
+    # Embed semantic confidence into results
     semantic_confidence = retrieval_eval.get("confidence", 1.0)
     for result in diverse_results:
         result["semantic_confidence"] = semantic_confidence
 
-    # OPTIMIZATION: Early exit for zero-relevance
+    # Early exit for zero-relevance
     if reranked:
-        top_cross_encoder_score = max(r.get("score", 0) for r in reranked[:5])
-        if top_cross_encoder_score < 0.1:
+        top_cross_encoder_score = max(r.get("score", 0) for r in reranked[:config.MMR_DIVERSITY_TOP_K])
+        if top_cross_encoder_score < config.CROSS_ENCODER_SCORE_THRESHOLD:
             logger.warning(
                 f"Zero relevance detected (CrossEncoder={top_cross_encoder_score:.3f}), "
                 "skipping re-retrieval to prevent wasteful API calls"
@@ -136,7 +136,7 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
         )
 
         # OPTIMIZATION: Progressive top_k reduction
-        progressive_top_k = {0: 15, 1: 10, 2: 5}.get(reretrieve_count, 5)
+        progressive_top_k = config.PROGRESSIVE_TOP_K_CONFIG.get(reretrieve_count, config.MMR_DIVERSITY_TOP_K)
 
         logger.info(f"COST OPTIMIZATION: Using top_k={progressive_top_k}")
 

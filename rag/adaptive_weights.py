@@ -7,10 +7,9 @@ replacing fixed weights (α, β, γ) with learned, query-specific weights.
 
 import logging
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 from enum import Enum
-import json
 
 logger = logging.getLogger(__name__)
 

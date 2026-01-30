@@ -7,8 +7,11 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from langdetect import detect
+from langdetect.lang_detect_exception import LangDetectException
 
 import config
+from rag.models.intent_analysis import QueryIntent
+from prompts.translation_prompts import TRANSLATOR_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,7 @@ def format_context_with_citations(documents: List[Dict]) -> Tuple[str, Dict[str,
 
 
 def check_context_quality(
-    documents: List[Dict[str, Any]], min_score: float = 0.3
+    documents: List[Dict[str, Any]], min_score: float = config.MIN_QUALITY_SCORE
 ) -> Dict[str, Any]:
     """
     Validate context quality before generation to prevent hallucinations
@@ -94,7 +97,7 @@ def check_context_quality(
             "avg_score": avg_score,
         }
 
-    if avg_score < 0.2:
+    if avg_score < config.MIN_AVG_RELEVANCE_SCORE:
         return {
             "sufficient": False,
             "reason": f"Average relevance score ({avg_score:.3f}) too low",
@@ -140,12 +143,9 @@ def enrich_context_with_memory(state, agent) -> Tuple[str, Dict[str, Dict]]:
     context_parts.append(f"CORE MEMORY:\n{core_memory}")
 
     # 2. Recent Conversation Context (if available)
+    # For clarification queries, use ALL messages since answer might be from earlier
     if state.retrieved_recall and len(state.retrieved_recall) > 0:
         recent_messages = []
-
-        # FIX: For clarification queries, use ALL messages (answer might be from earlier)
-        from rag import QueryIntent
-
         is_clarification = state.query_intent == QueryIntent.CLARIFICATION
         messages_to_use = (
             state.retrieved_recall if is_clarification else state.retrieved_recall[-5:]
@@ -255,7 +255,7 @@ def apply_mmr(
         return [documents[i] for i in selected_indices]
 
     except Exception as e:
-        logger.error(f"MMR calculation failed: {e}")
+        logger.error(f"MMR calculation failed: {e}", exc_info=True)
         return documents[:k]
 
 
@@ -285,7 +285,7 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
         return dot_product / (mag1 * mag2)
 
     except Exception as e:
-        logger.error(f"Cosine similarity calculation failed: {e}")
+        logger.error(f"Cosine similarity calculation failed: {e}", exc_info=True)
         return 0.0
 
 
@@ -348,7 +348,7 @@ def should_retrieve_documents(
             if msg.get("role") == "assistant"
         )
 
-        if recent_content_length > 50:  # Substantial previous response
+        if recent_content_length > config.MIN_FOLLOW_UP_WORDS:
             logger.info(
                 f"Document retrieval: NO (follow-up detected, "
                 f"recall has {recent_content_length} words)"
@@ -372,7 +372,7 @@ def is_non_english(text: str) -> bool:
         # detect() returns language code (pt, en, es, etc.)
         lang = detect(text)
         return lang != "en"
-    except:
+    except LangDetectException:
         # In case of failure (e.g., text with only numbers), assume False
         return False
 
@@ -388,10 +388,7 @@ def translate_to_english(text: str, openai_client) -> str:
         response = openai_client.chat.completions.create(
             model=config.LLM_MODEL,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are a translator. Translate the user's text to English. Return ONLY the translation, nothing else.",
-                },
+                {"role": "system", "content": TRANSLATOR_SYSTEM_PROMPT},
                 {"role": "user", "content": text},
             ],
             temperature=0,
@@ -403,7 +400,7 @@ def translate_to_english(text: str, openai_client) -> str:
         return translation
 
     except Exception as e:
-        logger.error(f"Translation failed: {e}")
+        logger.error(f"Translation failed: {e}", exc_info=True)
         return text  # Fallback to original
 
 
@@ -438,4 +435,4 @@ def export_metrics_to_json(metrics: Dict, compression_stats: Dict, agent_id: str
             f.write(json.dumps(metrics_entry) + "\n")
         logger.debug(f"Metrics exported to {log_file}")
     except Exception as e:
-        logger.error(f"Failed to export metrics: {e}")
+        logger.error(f"Failed to export metrics: {e}", exc_info=True)

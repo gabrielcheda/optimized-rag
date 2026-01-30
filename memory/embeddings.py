@@ -11,7 +11,8 @@ from threading import Lock
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from openai import APIError, APIConnectionError, RateLimitError, APITimeoutError
 
-from config import OPENAI_API_KEY, EMBEDDING_MODEL, EMBEDDING_BATCH_SIZE
+from config import OPENAI_API_KEY, EMBEDDING_MODEL, EMBEDDING_BATCH_SIZE, EMBEDDING_CACHE_SIZE
+from utils.context import calculate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class EmbeddingService:
         self.cost_tracker = cost_tracker  # Track API costs
         
         # Manual cache with explicit control for hit/miss tracking
-        self._cache = LRUCache(maxsize=1000)
+        self._cache = LRUCache(maxsize=EMBEDDING_CACHE_SIZE)
         self._cache_lock = Lock()
         self._cache_hits = 0
         self._cache_misses = 0
@@ -76,7 +77,7 @@ class EmbeddingService:
         if not text or not text.strip():
             raise ValueError("Text cannot be empty or whitespace-only")
         
-        # OPTIMIZATION: Use cache for query embeddings (30-50% cost savings on repeated queries)
+        # Use cache for repeated queries (30-50% cost savings)
         if use_cache:
             with self._cache_lock:
                 if text in self._cache:
@@ -88,18 +89,6 @@ class EmbeddingService:
         
         # Generate new embedding
         embedding = self._generate_embedding_uncached(text)
-        
-        # Track costs if cost tracker enabled
-        if self.cost_tracker:
-            try:
-                num_tokens = len(text.split())  # Approximate token count
-                self.cost_tracker.track_embedding(
-                    model=self.model,
-                    num_tokens=num_tokens,
-                    num_calls=1
-                )
-            except Exception as e:
-                logger.debug(f"Cost tracking failed: {e}")
         
         # Store in cache
         if use_cache:
@@ -129,7 +118,7 @@ class EmbeddingService:
             
             # Track cost if tracker is available
             if self.cost_tracker:
-                num_tokens = len(text.split())  # Rough estimate
+                num_tokens = calculate_tokens(text, self.model)
                 self.cost_tracker.track_embedding(
                     model=self.model,
                     num_tokens=num_tokens,
@@ -205,7 +194,7 @@ class EmbeddingService:
             # Track costs for uncached embeddings
             if self.cost_tracker:
                 try:
-                    total_tokens = sum(len(t.split()) for t in uncached_texts)
+                    total_tokens = sum(calculate_tokens(t, self.model) for t in uncached_texts)
                     self.cost_tracker.track_embedding(
                         model=self.model,
                         num_tokens=total_tokens,
@@ -261,7 +250,7 @@ class EmbeddingService:
                 
                 # Track cost if tracker is available
                 if self.cost_tracker:
-                    total_tokens = sum(len(text.split()) for text in batch)  # Rough estimate
+                    total_tokens = sum(calculate_tokens(text, self.model) for text in batch)
                     self.cost_tracker.track_embedding(
                         model=self.model,
                         num_tokens=total_tokens,

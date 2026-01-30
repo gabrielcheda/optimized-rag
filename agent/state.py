@@ -1,16 +1,34 @@
-from typing import List, Dict, Any, Annotated, Optional
+from typing import List, Dict, Any, Annotated, Optional, TypedDict
 from operator import add
 from pydantic import BaseModel, Field, ConfigDict
 
 from rag.models.intent_analysis import QueryIntent
 
 
+class ChatResponse(TypedDict):
+    """
+    Typed response from MemGPTAgent.chat() method.
+
+    Attributes:
+        agent_response: The generated response text
+        intent: Detected query intent (e.g., QUESTION_ANSWERING, SEARCH)
+        retrieved_docs: Number of documents used for context
+        refinement_count: Number of query refinement iterations
+        quality_score: Confidence score of the response (0.0-1.0)
+    """
+    agent_response: str
+    intent: Optional[QueryIntent]
+    retrieved_docs: int
+    refinement_count: int
+    quality_score: float
+
+
 class MemGPTState(BaseModel):
     """
-    Estado do Agente MemGPT adaptado para Pydantic (LangGraph v0.2+)
-    Focado em Raciocínio de Sistema 1 e Sistema 2.
+    MemGPT Agent State adapted for Pydantic (LangGraph v0.2+)
+    Focused on System 1 and System 2 reasoning.
     """
-    # Configuração para permitir tipos arbitrários se necessário
+    # Configuration to allow arbitrary types if needed
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # --- Identidade e Sessão ---

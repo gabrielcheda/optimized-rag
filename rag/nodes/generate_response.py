@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
     """Generate AI response (Paper-compliant: few-shot prompting)"""
-    # 🔥 ENRICHED CONTEXT: Combines core memory + conversation + retrieved docs
+    # Enriched context: Combines core memory + conversation + retrieved docs
     enriched_context, source_map = enrich_context_with_memory(state, agent)
 
     # Check if this is a clarification question (uses recall memory instead of docs)
@@ -60,17 +60,18 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
             "source_map": {},
         }
 
+    # Build system prompt with few-shot examples and context
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+        few_shot_examples=FEW_SHOT_EXAMPLES, 
+        enriched_context=enriched_context
+    )
     
-
-    SYSTEM_PROMPT_TEMPLATE.format(few_shot_examples=FEW_SHOT_EXAMPLES, enriched_context=enriched_context)
-
-    
-    classification_prompt=""
+    # Add clarification instruction if needed
     if is_clarification:
-        classification_prompt=CLARIFICATION_INSTRUCTION
+        system_prompt += CLARIFICATION_INSTRUCTION
 
     messages = [
-        SystemMessage(content=SYSTEM_PROMPT_TEMPLATE + classification_prompt),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=state.user_input),
     ]
 
@@ -84,9 +85,6 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
         logger.info(f"LLM requested {len(tool_calls)} tool calls")
 
     answer = response.content if hasattr(response, "content") else str(response)
-    # Ensure answer is a string
-    if not isinstance(answer, str):
-        answer = str(answer)
 
     # Paper-compliant: Faithfulness Evaluation
     faithfulness = {}
@@ -99,7 +97,7 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
             f"{faithfulness.get('reasoning', 'N/A')[:100]}"
         )
 
-    # OPTIMIZATION: Factuality Scorer - Calculate comprehensive quality score
+    # Calculate comprehensive quality score using factuality scorer
     factuality_result = {}
     auto_refused = False
 

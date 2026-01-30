@@ -3,9 +3,11 @@ Database Connection Manager
 Handles PostgreSQL connection pooling and context management
 """
 
-from psycopg2 import pool
+import atexit
+from psycopg2 import pool, OperationalError
+from psycopg2.extensions import connection, cursor
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Generator
 import logging
 
 from config import POSTGRES_URI
@@ -39,15 +41,20 @@ class DatabaseConnection:
                 dsn=POSTGRES_URI
             )
             logger.info("Database connection pool created successfully")
+            # Register cleanup on program exit
+            atexit.register(self.close_all_connections)
+        except OperationalError as e:
+            logger.error(f"Failed to connect to database: {e}", exc_info=True)
+            raise
         except Exception as e:
-            logger.error(f"Failed to create connection pool: {e}")
+            logger.error(f"Failed to create connection pool: {e}", exc_info=True)
             raise
     
     @contextmanager
-    def get_connection(self):
+    def get_connection(self) -> Generator[connection, None, None]:
         """
         Context manager for getting database connection from pool
-        
+
         Usage:
             with db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -63,17 +70,17 @@ class DatabaseConnection:
         except Exception as e:
             if conn:
                 conn.rollback()
-            logger.error(f"Database error: {e}")
+            logger.error(f"Database error: {e}", exc_info=True)
             raise
         finally:
             if conn and self._connection_pool is not None:
                 self._connection_pool.putconn(conn)
     
     @contextmanager
-    def get_cursor(self):
+    def get_cursor(self) -> Generator[cursor, None, None]:
         """
         Context manager for getting cursor directly
-        
+
         Usage:
             with db.get_cursor() as cursor:
                 cursor.execute("SELECT ...")
@@ -95,12 +102,12 @@ class DatabaseConnection:
     def test_connection(self) -> bool:
         """Test database connectivity"""
         try:
-            with self.get_cursor() as cursor:
-                cursor.execute("SELECT 1")
-                result = cursor.fetchone()
-                return result[0] == 1
+            with self.get_cursor() as cur:
+                cur.execute("SELECT 1")
+                result = cur.fetchone()
+                return result is not None and result[0] == 1
         except Exception as e:
-            logger.error(f"Connection test failed: {e}")
+            logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
 
 

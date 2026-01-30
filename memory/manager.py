@@ -35,10 +35,6 @@ class MemoryManager:
         self.db = DatabaseOperations()
         self.embeddings = EmbeddingService()
         
-        # NOTE: Core memory cache removido para evitar inconsistências em multi-instance
-        # Core memory é pequeno (~1KB) e DB query é rápida (<5ms)
-        # Se precisar de cache, use Redis para compartilhar entre instâncias
-        
         # Initialize core memory if not exists
         self._ensure_core_memory()
         
@@ -131,7 +127,7 @@ class MemoryManager:
         core_memory = self.get_core_memory()
         current_value = core_memory[field_name]
         
-        # Conta ocorrências
+        # Count occurrences
         count = current_value.count(old_content)
         
         if count == 0:
@@ -210,7 +206,7 @@ class MemoryManager:
         Raises:
             ValueError: If content or embedding is empty
         """
-        # Valida content
+        # Validate content
         if not content or not content.strip():
             raise ValueError("Content cannot be empty or whitespace-only")
         
@@ -218,7 +214,7 @@ class MemoryManager:
             # Generate embedding
             embedding = self.embeddings.generate_embedding(content)
             
-            # Valida embedding
+            # Validate embedding
             if not embedding or len(embedding) == 0:
                 raise ValueError("Generated embedding is empty")
             
@@ -263,7 +259,7 @@ class MemoryManager:
             top_k: Number of results to return
         
         Returns:
-            List of matching records with similarity scores
+            List of dicts with keys: id, content, similarity, metadata, created_at
         """
         try:
             # Generate query embedding
@@ -343,7 +339,7 @@ class MemoryManager:
             limit: Number of messages to retrieve
         
         Returns:
-            List of recent messages
+            List of dicts with keys: id, role, content, timestamp, tokens_used
         """
         messages = self.db.get_recent_conversation(
             self.agent_id,
@@ -410,12 +406,17 @@ class MemoryManager:
         if len(contents) != len(metadatas):
             raise ValueError("Contents and metadatas must have same length")
         
+        # Validate all contents before processing
+        for i, content in enumerate(contents):
+            if not content or not content.strip():
+                raise ValueError(f"Content at index {i} is empty or whitespace-only")
+        
         try:
-            # Gera embeddings em batch
+            # Generate embeddings in batch
             logger.info(f"Generating embeddings for {len(contents)} items...")
             embeddings = self.embeddings.generate_embeddings_batch(contents)
             
-            # Usa método bulk insert do DB com transação atômica
+            # Use atomic bulk insert from DB
             record_ids = self.db.bulk_insert_archival_memory(
                 self.agent_id,
                 contents,

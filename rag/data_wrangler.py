@@ -202,8 +202,9 @@ class StructureExtractor:
         # Detect language (enhanced with langdetect if available)
         try:
             from langdetect import detect
+            from langdetect.lang_detect_exception import LangDetectException
             metadata['language'] = detect(text[:1000])  # Sample first 1000 chars
-        except:
+        except (ImportError, LangDetectException):
             metadata['language'] = 'en'  # Default fallback
         
         # Hierarchical Structure Detection (Paper-compliant)

@@ -8,6 +8,11 @@ import json
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from prompts.kg_extraction_prompts import (
+    KG_EXTRACTION_SYSTEM_PROMPT,
+    KG_EXTRACTION_PROMPT_TEMPLATE
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,28 +61,13 @@ class KnowledgeGraphExtractor:
             # Truncate very long text
             text_sample = text[:3000] if len(text) > 3000 else text
             
-            extraction_prompt = f"""Extract factual relationships from this text as knowledge graph triples.
-
-Text:
-{text_sample}
-
-Instructions:
-1. Identify key entities (people, organizations, concepts, technologies)
-2. Extract relationships between entities
-3. Format as: Subject | Relation | Object
-4. Focus on factual, verifiable relationships
-5. Return up to {max_triples} most important triples
-
-Example:
-Python | is_a | programming_language
-Python | used_for | web_development
-Django | is_framework_for | Python
-
-Now extract triples from the text above. One triple per line.
-Format: Subject | Relation | Object"""
+            extraction_prompt = KG_EXTRACTION_PROMPT_TEMPLATE.format(
+                text_sample=text_sample,
+                max_triples=max_triples
+            )
 
             messages = [
-                SystemMessage(content="You are a knowledge graph extraction system. Extract precise factual relationships."),
+                SystemMessage(content=KG_EXTRACTION_SYSTEM_PROMPT),
                 HumanMessage(content=extraction_prompt)
             ]
             

@@ -37,13 +37,7 @@ def chain_of_thought_node(state: MemGPTState, agent) -> Dict[str, Any]:
         ]
 
         response = agent.llm.invoke(messages)
-        cot_reasoning = (
-            response.content if hasattr(response, "content") else str(response)
-        )
-
-        # Ensure cot_reasoning is a string (type safety)
-        if not isinstance(cot_reasoning, str):
-            cot_reasoning = str(cot_reasoning)
+        cot_reasoning = response.content if hasattr(response, "content") else str(response)
 
         # Parse reasoning steps
         reasoning_steps = []

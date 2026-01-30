@@ -4,7 +4,7 @@ Centralized configuration for OpenAI, Database, and Agent settings
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, SecretStr
 from typing import Dict
 
 class Settings(BaseSettings):
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     )
     
     # OpenAI Configuration
-    openai_api_key: str = Field(..., description="OpenAI API key for LLM and embeddings")
+    openai_api_key: SecretStr = Field(..., description="OpenAI API key for LLM and embeddings")
     llm_model: str = Field(default="gpt-4o-mini", description="LLM model to use")
     # OPTIMIZATION: text-embedding-3-small provides 80% cost savings vs ada-002 with similar quality
     embedding_model: str = Field(default="text-embedding-3-small", description="Embedding model for semantic search")
@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     enable_metrics_logging: bool = Field(default=True, description="Enable metrics logging")
     metrics_log_interval: int = Field(default=10, description="Log metrics every N queries")
     
+    # Embedding Cache
+    embedding_cache_size: int = Field(default=1000, description="LRU cache size for embeddings")
+    
     # Web Search (optional)
     tavily_api_key: str = Field(default="", description="Tavily API key for web search (optional)")
     
@@ -110,7 +113,8 @@ class Settings(BaseSettings):
 settings = Settings()  # type: ignore[call-arg]
 
 # Backward compatibility: expose as uppercase constants
-OPENAI_API_KEY = settings.openai_api_key
+# NOTE: Prefer using settings.openai_api_key.get_secret_value() directly
+OPENAI_API_KEY = settings.openai_api_key.get_secret_value()
 LLM_MODEL = settings.llm_model
 EMBEDDING_MODEL = settings.embedding_model
 RERANKING_EMBEDDING_MODEL = settings.reranking_embedding_model
@@ -144,6 +148,7 @@ ENABLE_TIER_3 = settings.enable_tier_3
 ENABLE_COST_TRACKING = settings.enable_cost_tracking
 ENABLE_METRICS_LOGGING = settings.enable_metrics_logging
 METRICS_LOG_INTERVAL = settings.metrics_log_interval
+EMBEDDING_CACHE_SIZE = settings.embedding_cache_size
 TAVILY_API_KEY = settings.tavily_api_key
 POSTGRES_URI = settings.postgres_uri
 MAX_CONTEXT_TOKENS = settings.max_context_tokens
@@ -158,3 +163,52 @@ DEFAULT_AGENT_PERSONA = "I am a helpful AI assistant with long-term memory capab
 ARCHIVAL_SEARCH_RESULTS = 5  # Number of results to retrieve from archival memory
 RECALL_SEARCH_RESULTS = 10   # Number of conversation messages to retrieve
 EMBEDDING_BATCH_SIZE = 100   # Batch size for embedding generation
+
+# Self-RAG Settings
+MAX_CHARS_PER_DOC = 2000     # Maximum characters per document for claim verification
+MIN_QUALITY_SCORE = 0.3      # Minimum quality score threshold
+MIN_SUPPORT_RATIO = 0.7      # Minimum support ratio for anti-hallucination
+
+# Context Quality Settings
+MIN_AVG_RELEVANCE_SCORE = 0.2   # Minimum average relevance score for context quality
+MIN_FOLLOW_UP_WORDS = 50        # Minimum words in recent response to skip document retrieval
+
+# CoT (Chain-of-Thought) Decision Thresholds
+COT_WORD_COUNT_THRESHOLD = 20   # Word count above which CoT is triggered
+COT_CONFIDENCE_THRESHOLD = 0.5  # Confidence below which CoT is triggered
+
+# Query Refinement Settings
+MAX_REFINEMENT_ATTEMPTS = 2      # Maximum number of query refinement iterations
+REFINEMENT_CONFIDENCE_THRESHOLD = 0.4  # Confidence threshold to trigger refinement
+MIN_ANSWER_WORD_COUNT = 20       # Minimum answer length to avoid refinement
+
+# Reranking & Retrieval Settings
+RERANK_TOP_K_DEFAULT = 15        # Default top_k for reranking
+MMR_DIVERSITY_TOP_K = 5          # Top K documents after MMR diversity
+CROSS_ENCODER_SCORE_THRESHOLD = 0.1  # Minimum cross-encoder score to consider relevant
+PROGRESSIVE_TOP_K_CONFIG = {     # Progressive top_k reduction for re-retrieval
+    0: 15,  # First attempt
+    1: 10,  # Second attempt
+    2: 5    # Third attempt
+}
+
+# Knowledge Graph Settings
+KG_RESULT_LIMIT = 5              # Maximum KG entities to retrieve
+
+# Multi-Document Synthesis Settings
+SYNTHESIS_DOC_LIMIT = 5          # Maximum documents for synthesis
+SYNTHESIS_CONTENT_PREVIEW = 300  # Characters to preview per document
+# Context Compression Settings
+COMPRESSION_MIN_THRESHOLD = 0.005    # Minimum threshold for low-score documents
+COMPRESSION_INTENT_THRESHOLDS = {   # Dynamic thresholds by intent
+    "QUESTION_ANSWERING": 0.5,
+    "SEARCH": 0.4,
+    "CONVERSATIONAL": 0.35,
+    "MULTI_HOP_REASONING": 0.55
+}
+
+# Hierarchical Retriever Settings
+HIERARCHICAL_CONFIDENCE_BLEND_WEIGHT = 0.6  # Statistical weight in confidence blend
+HIERARCHICAL_SEMANTIC_BLEND_WEIGHT = 0.4    # Semantic weight in confidence blend
+HIERARCHICAL_BOOST_THRESHOLD = 0.7          # Score threshold for confidence boost
+HIERARCHICAL_BOOST_MULTIPLIER = 1.2         # Confidence boost multiplier

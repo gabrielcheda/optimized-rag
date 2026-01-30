@@ -6,6 +6,16 @@ Evaluates retrieval and answer quality, triggers re-retrieval if needed
 from typing import List, Dict, Any, Tuple, Optional
 import logging
 
+from prompts.self_rag_prompts import (
+    RETRIEVAL_EVALUATION_PROMPT,
+    RETRIEVAL_EVALUATION_SYSTEM,
+    CLAIM_EXTRACTION_PROMPT,
+    CLAIM_EXTRACTION_SYSTEM,
+    EVIDENCE_VERIFICATION_PROMPT,
+    EVIDENCE_VERIFICATION_SYSTEM,
+)
+from config import MAX_CHARS_PER_DOC, MIN_SUPPORT_RATIO
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,26 +73,17 @@ class SelfRAGEvaluator:
             f"Doc {i+1}: {doc.get('content', '')[:200]}..."
             for i, doc in enumerate(retrieved_docs[:3])
         ])
-        
-        prompt = f"""Evaluate if retrieved documents are relevant to the query.
 
-Query: {query}
-
-Retrieved Documents:
-{docs_summary}
-
-Answer with:
-RELEVANT: [yes/no]
-CONFIDENCE: [0.0-1.0]
-REASONING: [explanation]
-
-Evaluation:"""
+        prompt = RETRIEVAL_EVALUATION_PROMPT.format(
+            query=query,
+            docs_summary=docs_summary
+        )
 
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
-            
+
             messages = [
-                SystemMessage(content="You evaluate retrieval quality."),
+                SystemMessage(content=RETRIEVAL_EVALUATION_SYSTEM),
                 HumanMessage(content=prompt)
             ]
             
@@ -107,21 +108,12 @@ Evaluation:"""
     
     def _extract_claims(self, answer: str) -> List[str]:
         """Extract individual factual claims from answer"""
-        prompt = f"""Extract individual factual claims from this answer. List each claim separately.
+        prompt = CLAIM_EXTRACTION_PROMPT.format(answer=answer)
 
-Answer: {answer}
-
-Extract only factual claims (not opinions or questions). Format as:
-1. [claim]
-2. [claim]
-...
-
-Claims:"""
-        
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
             messages = [
-                SystemMessage(content="You extract factual claims from text."),
+                SystemMessage(content=CLAIM_EXTRACTION_SYSTEM),
                 HumanMessage(content=prompt)
             ]
             response = self.llm.invoke(messages)
@@ -142,10 +134,10 @@ Claims:"""
             return [answer]
     
     def _find_supporting_evidence(
-        self, 
-        claim: str, 
-        documents: List[Dict[str, Any]], 
-        max_chars_per_doc: int = 2000  # Increased from 1000
+        self,
+        claim: str,
+        documents: List[Dict[str, Any]],
+        max_chars_per_doc: int = MAX_CHARS_PER_DOC
     ) -> Dict[str, Any]:
         """Find supporting evidence for a claim in documents"""
         
@@ -164,25 +156,15 @@ Claims:"""
             for i, doc in enumerate(documents[:5])  # Check top 5 docs
         ])
         
-        prompt = f"""Does this claim have supporting evidence in the documents?
+        prompt = EVIDENCE_VERIFICATION_PROMPT.format(
+            claim=claim,
+            docs_content=docs_content
+        )
 
-Claim: {claim}
-
-Documents:
-{docs_content}
-
-Respond:
-SUPPORTED: [yes/no]
-CONFIDENCE: [0.0-1.0]
-EVIDENCE: [quote from document that supports claim, or 'none']
-DOCUMENT: [which document number, or 'none']
-
-Evaluation:"""
-        
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
             messages = [
-                SystemMessage(content="You verify if claims are supported by documents."),
+                SystemMessage(content=EVIDENCE_VERIFICATION_SYSTEM),
                 HumanMessage(content=prompt)
             ]
             response = self.llm.invoke(messages)
@@ -196,7 +178,7 @@ Evaluation:"""
                 if 'confidence:' in line.lower():
                     try:
                         confidence = float(line.split(':')[1].strip())
-                    except:
+                    except (ValueError, IndexError):
                         confidence = 0.5 if supported else 0.0
                     break
             
@@ -262,7 +244,7 @@ Evaluation:"""
             avg_confidence = 0.0
         
         # Determine if answer is supported
-        is_supported = support_ratio >= 0.7  # At least 70% of claims supported
+        is_supported = support_ratio >= MIN_SUPPORT_RATIO
         has_hallucination = support_ratio < 0.5  # More than 50% unsupported = hallucination
         
         # Build context summary for logging (using full context now)
@@ -389,7 +371,7 @@ Evaluation:"""
             elif line.startswith("CONFIDENCE:"):
                 try:
                     confidence = float(line.replace("CONFIDENCE:", "").strip())
-                except:
+                except ValueError:
                     confidence = 0.7
             elif line.startswith("REASONING:"):
                 reasoning = line.replace("REASONING:", "").strip()
@@ -421,7 +403,7 @@ Evaluation:"""
             elif line.startswith("CONFIDENCE:"):
                 try:
                     confidence = float(line.replace("CONFIDENCE:", "").strip())
-                except:
+                except ValueError:
                     confidence = 0.7
             elif line.startswith("HALLUCINATION:"):
                 halluc_str = line.replace("HALLUCINATION:", "").strip().lower()

@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 from datetime import datetime
 
+import config
 from rag.models.intent_analysis import QueryIntent
 
 logger = logging.getLogger(__name__)
@@ -82,8 +83,11 @@ class ConfidenceEvaluator:
                 break
         
         if semantic_confidence is not None:
-            # Blend: 60% statistical, 40% semantic
-            confidence = 0.6 * statistical_confidence + 0.4 * semantic_confidence
+            # Blend: configurable statistical/semantic weights
+            confidence = (
+                config.HIERARCHICAL_CONFIDENCE_BLEND_WEIGHT * statistical_confidence + 
+                config.HIERARCHICAL_SEMANTIC_BLEND_WEIGHT * semantic_confidence
+            )
             logger.debug(
                 f"Blended confidence: {confidence:.3f} "
                 f"(statistical={statistical_confidence:.3f}, semantic={semantic_confidence:.3f})"
@@ -92,9 +96,9 @@ class ConfidenceEvaluator:
             confidence = statistical_confidence
         
         # Intent-specific adjustments
-        if intent in ['qa', 'search'] and max_score > 0.7:
+        if intent in ['qa', 'search'] and max_score > config.HIERARCHICAL_BOOST_THRESHOLD:
             # Simple queries with high-scoring match get boosted confidence
-            confidence = min(confidence * 1.2, 1.0)
+            confidence = min(confidence * config.HIERARCHICAL_BOOST_MULTIPLIER, 1.0)
         elif intent == 'multi_hop' and len(results) < 3:
             # Complex queries need more context
             confidence *= 0.8

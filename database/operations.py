@@ -4,9 +4,10 @@ CRUD operations for archival, recall, and core memory tables
 """
 
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 import logging
 
+from psycopg2 import sql
 from .connection import db
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ class DatabaseOperations:
                 logger.info(f"Inserted archival memory ID {record_id} for agent {agent_id}")
                 return record_id
         except Exception as e:
-            logger.error(f"Failed to insert archival memory: {e}")
+            logger.error(f"Failed to insert archival memory: {e}", exc_info=True)
             raise
     
     @staticmethod
@@ -102,7 +103,7 @@ class DatabaseOperations:
                 logger.info(f"Bulk inserted {len(record_ids)} items for agent {agent_id}")
                 return record_ids
         except Exception as e:
-            logger.error(f"Failed to bulk insert archival memory: {e}")
+            logger.error(f"Failed to bulk insert archival memory: {e}", exc_info=True)
             raise
     
     @staticmethod
@@ -154,7 +155,7 @@ class DatabaseOperations:
                     for row in results
                 ]
         except Exception as e:
-            logger.error(f"Failed to search archival memory: {e}")
+            logger.error(f"Failed to search archival memory: {e}", exc_info=True)
             raise
     
     @staticmethod
@@ -167,7 +168,7 @@ class DatabaseOperations:
                 cursor.execute(query, (memory_id, agent_id))
                 return cursor.rowcount > 0
         except Exception as e:
-            logger.error(f"Failed to delete archival memory: {e}")
+            logger.error(f"Failed to delete archival memory: {e}", exc_info=True)
             raise
     
     # ==================== RECALL MEMORY ====================
@@ -207,7 +208,7 @@ class DatabaseOperations:
                 )
                 return cursor.fetchone()[0]
         except Exception as e:
-            logger.error(f"Failed to insert recall memory: {e}")
+            logger.error(f"Failed to insert recall memory: {e}", exc_info=True)
             raise
     
     @staticmethod
@@ -252,7 +253,7 @@ class DatabaseOperations:
                     for row in reversed(results)
                 ]
         except Exception as e:
-            logger.error(f"Failed to get recent conversation: {e}")
+            logger.error(f"Failed to get recent conversation: {e}", exc_info=True)
             raise
     
     @staticmethod
@@ -302,7 +303,7 @@ class DatabaseOperations:
                     for row in results
                 ]
         except Exception as e:
-            logger.error(f"Failed to search conversation history: {e}")
+            logger.error(f"Failed to search conversation history: {e}", exc_info=True)
             raise
     
     # ==================== CORE MEMORY ====================
@@ -340,7 +341,7 @@ class DatabaseOperations:
                 )
                 logger.info(f"Initialized core memory for agent {agent_id}")
         except Exception as e:
-            logger.error(f"Failed to initialize core memory: {e}")
+            logger.error(f"Failed to initialize core memory: {e}", exc_info=True)
             raise
     
     @staticmethod
@@ -367,37 +368,45 @@ class DatabaseOperations:
                     }
                 return None
         except Exception as e:
-            logger.error(f"Failed to get core memory: {e}")
+            logger.error(f"Failed to get core memory: {e}", exc_info=True)
             raise
     
+    # Whitelist of allowed fields for dynamic updates
+    ALLOWED_CORE_MEMORY_FIELDS = frozenset(['human_persona', 'agent_persona'])
+
     @staticmethod
     def update_core_memory_field(
         agent_id: str,
-        field: str,
+        field: Literal['human_persona', 'agent_persona'],
         value: str
     ) -> bool:
         """
         Update specific field in core memory
-        
+
         Args:
             agent_id: Agent identifier
             field: Field to update (human_persona or agent_persona)
             value: New value
-        
+
         Returns:
             True if updated successfully
+
+        Raises:
+            ValueError: If field is not in allowed whitelist
         """
-        if field not in ['human_persona', 'agent_persona']:
-            raise ValueError(f"Invalid field: {field}")
-        
-        query = f"UPDATE core_memory SET {field} = %s WHERE agent_id = %s;"
-        
+        if field not in DatabaseOperations.ALLOWED_CORE_MEMORY_FIELDS:
+            raise ValueError(f"Invalid field: {field}. Allowed: {DatabaseOperations.ALLOWED_CORE_MEMORY_FIELDS}")
+
+        query = sql.SQL("UPDATE core_memory SET {} = %s WHERE agent_id = %s;").format(
+            sql.Identifier(field)
+        )
+
         try:
             with db.get_cursor() as cursor:
                 cursor.execute(query, (value, agent_id))
                 return cursor.rowcount > 0
         except Exception as e:
-            logger.error(f"Failed to update core memory: {e}")
+            logger.error(f"Failed to update core memory: {e}", exc_info=True)
             raise
     
     @staticmethod
@@ -414,7 +423,7 @@ class DatabaseOperations:
                 cursor.execute(query, (json.dumps([fact]), agent_id))
                 return cursor.rowcount > 0
         except Exception as e:
-            logger.error(f"Failed to append core memory fact: {e}")
+            logger.error(f"Failed to append core memory fact: {e}", exc_info=True)
             raise
     
     # ==================== MEMORY OPERATIONS LOG ====================

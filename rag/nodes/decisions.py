@@ -40,7 +40,7 @@ def should_use_cot(state, agent) -> str:
     word_count = len(query.split())
     has_multiple_questions = query.count("?") > 1 or " and " in query.lower()
 
-    if word_count > 20 or has_multiple_questions:
+    if word_count > config.COT_WORD_COUNT_THRESHOLD or has_multiple_questions:
         logger.info(
             f"CoT triggered by complexity: {word_count} words, multiple questions: {has_multiple_questions}"
         )
@@ -49,7 +49,7 @@ def should_use_cot(state, agent) -> str:
     # Check if evaluation suggests low confidence
     quality_eval = state.quality_eval
     confidence = quality_eval.get("confidence", 1.0)
-    if confidence < 0.5:
+    if confidence < config.COT_CONFIDENCE_THRESHOLD:
         logger.info(f"CoT triggered by low confidence: {confidence:.2f}")
         return "cot"
 
@@ -93,7 +93,7 @@ def should_refine_query(state, agent) -> str:
         return "continue"
 
     refinement_count = state.refinement_count
-    if refinement_count >= 2:  # Max 2 refinement attempts
+    if refinement_count >= config.MAX_REFINEMENT_ATTEMPTS:  # Max refinement attempts
         logger.info("Max refinement attempts reached")
         return "continue"
 
@@ -102,7 +102,7 @@ def should_refine_query(state, agent) -> str:
     is_relevant = quality_eval.get("is_relevant", True)
     confidence = quality_eval.get("confidence", 1.0)
 
-    if not is_relevant or confidence < 0.4:
+    if not is_relevant or confidence < config.REFINEMENT_CONFIDENCE_THRESHOLD:
         logger.info(
             f"Query refinement triggered (relevant={is_relevant}, conf={confidence:.2f})"
         )
@@ -110,9 +110,7 @@ def should_refine_query(state, agent) -> str:
 
     # Check if answer is too short (might indicate insufficient context)
     answer = state.agent_response or ""
-    if not isinstance(answer, str):
-        answer = str(answer)
-    if len(answer.split()) < 20:
+    if len(answer.split()) < config.MIN_ANSWER_WORD_COUNT:
         logger.info("Query refinement triggered (short answer)")
         return "refine"
 

@@ -8,7 +8,8 @@ from typing import Dict, Any, List, Optional
 import logging
 import re
 
-from sympy import simplify
+from langdetect import detect
+from langdetect.lang_detect_exception import LangDetectException
 
 from prompts.query_rewriter_prompts import QUERY_REWRITER_PROMPT
 from rag.models.unified_rewrite import UnifiedRewrite
@@ -82,65 +83,68 @@ class QueryRewriter:
         return has_repeated_chars or has_mixed_case or has_excessive_punctuation
 
     def rewrite(
-		self,
-		query: str,
-		intent: Optional[QueryIntent] = None,
-		conversation_history: Optional[List[Dict[str, str]]] = None
-	) -> Dict[str, Any]:
-		
-		# 1. Avalia heurísticas (Sistema 1)
+        self,
+        query: str,
+        intent: Optional[QueryIntent] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Any]:
+        
+        # 1. Evaluate heuristics (System 1)
         needs = {
-			"simplify": self._needs_simplification(query),
-			"contextualize": self._has_ambiguous_references(query) and conversation_history,
-			"reformulate": self._needs_reformulation(query, intent),
-			"correct": self._has_obvious_errors(query)
-		}
+            "simplify": self._needs_simplification(query),
+            "contextualize": self._has_ambiguous_references(query) and conversation_history is not None,
+            "reformulate": self._needs_reformulation(query, intent),
+            "correct": self._has_obvious_errors(query)
+        }
 
-		# Se nada é necessário, economizamos 100% do custo de LLM
+        # If nothing is needed, we save 100% of LLM cost
         if not any(needs.values()):
             return {"original": query, "rewritten": query, "applied_strategies": []}
 
-        # 2. Constrói o Prompt Dinâmico (English for precision)
-        if(conversation_history):
-            history_text = self._format_history(conversation_history) if needs["contextualize"] else "N/A"
-		
-        prompt = QUERY_REWRITER_PROMPT.format(simplify=needs["simplify"],
+        # 2. Build dynamic prompt (English for precision)
+        history_text = "N/A"
+        if conversation_history and needs["contextualize"]:
+            history_text = self._format_history(conversation_history)
+        
+        prompt = QUERY_REWRITER_PROMPT.format(
+            simplify=needs["simplify"],
             contextualize=needs["contextualize"],
             reformulate=needs["reformulate"],
             correct=needs["correct"],
             query=query,
-            history_text=history_text if conversation_history else "N/A")
+            history_text=history_text
+        )
 
-		# 3. Chamada Única Estruturada
+        # 3. Single structured call
         structured_llm = self.llm.with_structured_output(UnifiedRewrite)
         result = structured_llm.invoke(prompt)
 
-		# 4. Seleção da Melhor Versão (Heurística de Prioridade)
-		# Prioridade: Contextualizada > Reformulada > Simplificada > Corrigida
+        # 4. Select best version (Priority heuristic)
+        # Priority: Contextualized > Reformulated > Simplified > Corrected
         best_version = (
-			result.contextualized_query or 
-			result.reformulated_query or 
-			result.simplified_query or 
-			result.corrected_query or 
-			query
-		)
+            result.contextualized_query or 
+            result.reformulated_query or 
+            result.simplified_query or 
+            result.corrected_query or 
+            query
+        )
 
         return {
-			"original": query,
-			"rewritten": best_version,
-			"metadata": result.model_dump(),
-			"strategies": [k for k, v in needs.items() if v]
-		} 
+            "original": query,
+            "rewritten": best_version,
+            "metadata": result.model_dump(),
+            "strategies": [k for k, v in needs.items() if v]
+        } 
    
     def _format_history(self, conversation_history: List[Dict[str, str]]) -> str:
         """
-        Formata o histórico recente para o LLM.
-        Foca nas últimas mensagens para economizar tokens e manter o foco.
+        Format recent history for LLM.
+        Focus on last messages to save tokens and maintain focus.
         """
         if not conversation_history:
             return "No previous history available."
 
-        # Pegamos as últimas 3 a 5 mensagens (janela ideal para contextualização)
+        # Get last 3-5 messages (ideal window for contextualization)
         recent_context = conversation_history[-5:]
 
         formatted_messages = []
@@ -164,10 +168,9 @@ class QueryRewriter:
             # Detect language to maintain consistency
             original_lang = None
             try:
-                from langdetect import detect
                 original_lang = detect(query)
                 lang_instruction = f"IMPORTANT: You MUST maintain the SAME language as the original query ({original_lang}). Do NOT translate."
-            except:
+            except LangDetectException:
                 lang_instruction = "IMPORTANT: You MUST maintain the SAME language as the original query. Do NOT translate."
             
             prompt = f"""Simplify this query while preserving its meaning and language.
@@ -208,7 +211,7 @@ Simplified:"""
                                 # Last attempt failed, return original
                                 logger.error(f"Language drift persisted after {max_retries} attempts, returning original query")
                                 return query
-                    except:
+                    except LangDetectException:
                         # Language detection failed, accept result
                         return simplified if simplified else query
                 else:
@@ -244,9 +247,8 @@ Simplified:"""
             # Detect original language
             original_lang = None
             try:
-                from langdetect import detect
                 original_lang = detect(query)
-            except:
+            except LangDetectException:
                 pass
             
             # Get recent context
@@ -280,13 +282,13 @@ Rewrite the query with full context (replace "it", "that", "other one" with actu
                     if output_lang != original_lang:
                         logger.warning(f"add_context() language drift {original_lang}→{output_lang}, returning original")
                         return query
-                except:
+                except LangDetectException:
                     pass
-            
+
             return contextualized if contextualized else query
-        
+
         except Exception as e:
-            logger.error(f"Query contextualization failed: {e}")
+            logger.error(f"Query contextualization failed: {e}", exc_info=True)
             return query
     
     def reformulate(
@@ -348,7 +350,7 @@ Reformulated:"""
                     if output_lang != original_lang:
                         logger.warning(f"reformulate() language drift {original_lang}→{output_lang}, returning original")
                         return query
-                except:
+                except LangDetectException:
                     pass
             
             return reformulated if reformulated else query
@@ -369,9 +371,8 @@ Reformulated:"""
             # Detect original language
             original_lang = None
             try:
-                from langdetect import detect
                 original_lang = detect(query)
-            except:
+            except LangDetectException:
                 pass
             
             prompt = f"""Correct any spelling or grammar errors in this query.
@@ -397,7 +398,7 @@ Corrected:"""
                     if output_lang != original_lang:
                         logger.warning(f"correct_errors() language drift {original_lang}→{output_lang}, returning original")
                         return query
-                except:
+                except LangDetectException:
                     pass
             
             # If too different, probably wrong - keep original

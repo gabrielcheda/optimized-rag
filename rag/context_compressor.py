@@ -13,6 +13,7 @@ from typing import List, Dict, Any
 import logging
 import re
 
+import config
 from rag.models.intent_analysis import QueryIntent
 
 logger = logging.getLogger(__name__)
@@ -60,19 +61,17 @@ class ContextCompressor:
         
         # OPTIMIZATION: Quality pre-filtering - skip compression on low-relevance docs
         # Dynamic threshold based on query intent (INCREASED for anti-hallucination)
-        base_threshold = {
-            QueryIntent.QUESTION_ANSWERING: 0.5,       # Increased from 0.3 - Strict for factual questions
-            QueryIntent.SEARCH: 0.4,   # Increased from 0.25 - More selective
-            QueryIntent.CONVERSATIONAL: 0.35,    # Increased from 0.2 - Better quality for conversation
-            QueryIntent.MULTI_HOP_REASONING: 0.55  # Increased from 0.35 - Strictest for complex queries
-        }.get(query_intent, 0.45)  # Default increased from 0.3 to 0.45
+        base_threshold = config.COMPRESSION_INTENT_THRESHOLDS.get(
+            query_intent.value if hasattr(query_intent, 'value') else str(query_intent),
+            0.45  # Default
+        )
         
         # CRITICAL FIX: If very few documents, lower threshold dramatically
         # (cross-language queries have low embedding scores but valid content)
         if len(documents) <= 5:
             max_doc_score = max((d.get('score', 0) for d in documents), default=0)
             if max_doc_score < 0.1:  # All docs have terrible embedding scores
-                relevance_threshold = 0.005  # Accept anything above 0.5%
+                relevance_threshold = config.COMPRESSION_MIN_THRESHOLD  # Accept anything above 0.5%
                 logger.warning(f"Very low document scores (max={max_doc_score:.3f}), using minimal threshold {relevance_threshold}")
             else:
                 relevance_threshold = base_threshold

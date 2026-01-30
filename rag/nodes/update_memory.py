@@ -8,7 +8,11 @@ from typing import Any, Dict
 
 from agent.state import MemGPTState
 from utils.context import calculate_tokens
-
+from prompts.memory_extraction_prompts import (
+    FACT_EXTRACTION_SYSTEM_PROMPT,
+    FACT_EXTRACTION_USER_PROMPT_TEMPLATE,
+    SKIP_FACT_EXTRACTION_INTENTS
+)
 logger = logging.getLogger(__name__)
 
 
@@ -98,8 +102,7 @@ def _extract_and_store_core_facts(state: MemGPTState, agent) -> None:
         return
 
     # Skip for simple queries (greetings, clarifications, simple Q&A)
-    skip_intents = ["chitchat", "greeting", "clarification"]
-    if state.query_intent and state.query_intent.value.lower() in skip_intents:
+    if state.query_intent and state.query_intent.value.lower() in SKIP_FACT_EXTRACTION_INTENTS:
         return
 
     # Use LLM to extract personal facts
@@ -108,17 +111,14 @@ def _extract_and_store_core_facts(state: MemGPTState, agent) -> None:
             [
                 {
                     "role": "system",
-                    "content": """You are a fact extractor. Analyze the user message and extract ONLY personal facts about the user.
-            
-Rules:
-- Return ONLY new facts about the USER (not general knowledge questions)
-- Facts should be concise, one-line statements
-- If there are NO personal facts, return EMPTY (no text)
-- Examples of facts: "User's name is Gabriel", "User works in AI", "User prefers concise answers"
-
-Format: One fact per line, or empty if no facts.""",
+                    "content": FACT_EXTRACTION_SYSTEM_PROMPT,
                 },
-                {"role": "user", "content": f"User message: {state.user_input}"},
+                {
+                    "role": "user", 
+                    "content": FACT_EXTRACTION_USER_PROMPT_TEMPLATE.format(
+                        user_message=state.user_input
+                    )
+                },
             ]
         )
 

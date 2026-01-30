@@ -20,6 +20,9 @@ from .knowledge_graph import KnowledgeGraphExtractor, KnowledgeGraphRetriever
 from .ragas_evaluator import RAGASEvaluator
 from .adaptive_weights import DynamicWeightManager, QueryComplexity
 from .hierarchical_retriever import HierarchicalRetriever, RetrievalTier
+from .selective_reranker import SelectiveReranker
+from .factuality_scorer import FactualityScorer
+from .ensemble_verifier import EnsembleVerifier
 
 __all__ = [
     'DataWrangler',
@@ -46,5 +49,12 @@ __all__ = [
     'RAGEvaluator',
     'KnowledgeGraphExtractor',
     'KnowledgeGraphRetriever',
-    'RAGASEvaluator'
+    'RAGASEvaluator',
+    'DynamicWeightManager',
+    'QueryComplexity',
+    'HierarchicalRetriever',
+    'RetrievalTier',
+    'SelectiveReranker',
+    'FactualityScorer',
+    'EnsembleVerifier'
 ]

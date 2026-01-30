@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional
 from enum import Enum
 import logging
 
+from prompts.routing_prompts import ROUTING_PROMPT_TEMPLATE, SOURCE_DESCRIPTIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,36 +61,12 @@ class QueryRouter:
         return decision
     
     def _build_routing_prompt(self, query: str, available_sources: List[DataSource]) -> str:
-        source_descriptions = {
-            DataSource.ARCHIVAL_MEMORY: "Long-term memory from past interactions",
-            DataSource.DOCUMENTS: "Recently uploaded documents (PDFs, texts)",
-            DataSource.WEB_SEARCH: "Real-time web search for current info",
-            DataSource.CONVERSATION_HISTORY: "Recent conversation context",
-            DataSource.HYBRID: "Multiple sources combined"
-        }
-        
         sources_list = "\n".join([
-            f"- {source.value}: {source_descriptions[source]}"
+            f"- {source.value}: {SOURCE_DESCRIPTIONS.get(source.value.upper(), 'N/A')}"
             for source in available_sources
         ])
         
-        return f"""Route the query to the best data source.
-
-Available sources:
-{sources_list}
-
-Guidelines:
-- DOCUMENTS: PRIORITY - always try first for uploaded files, knowledge base content
-- ARCHIVAL_MEMORY: personal info, learned facts, past conversations
-- CONVERSATION_HISTORY: context from current conversation
-- HYBRID: when multiple sources beneficial
-- WEB_SEARCH: LAST RESORT - only for current events, real-time data not in documents
-
-IMPORTANT: Always prefer DOCUMENTS over WEB_SEARCH unless query explicitly asks for current/recent information.
-Respond:
-SOURCE: [source name]
-CONFIDENCE: [0.0-1.0]
-REASONING: [explanation]"""
+        return ROUTING_PROMPT_TEMPLATE.format(sources_list=sources_list)
     
     def _parse_routing_decision(self, response: str, available_sources: List[DataSource]) -> Dict[str, Any]:
         lines = response.strip().split('\n')

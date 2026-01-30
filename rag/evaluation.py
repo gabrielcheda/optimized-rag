@@ -13,6 +13,8 @@ from typing import List, Dict, Any, Set
 import math
 import logging
 
+from prompts.evaluation_prompts import FAITHFULNESS_EVALUATION_PROMPT
+
 logger = logging.getLogger(__name__)
 
 
@@ -181,24 +183,10 @@ class RAGEvaluator:
             for i, doc in enumerate(context[:5])
         ])
         
-        prompt = f"""Rate the faithfulness of the answer to the provided context on a scale of 0.0 to 1.0.
-
-Context:
-{context_text[:2000]}
-
-Answer:
-{answer[:1000]}
-
-Faithfulness means: Are all claims in the answer supported by the context?
-- 1.0 = All claims directly supported
-- 0.7-0.9 = Most claims supported
-- 0.4-0.6 = Some claims supported
-- 0.0-0.3 = Few/no claims supported
-
-Provide your evaluation in this format:
-SCORE: [0.0-1.0]
-REASONING: [brief explanation]
-"""
+        prompt = FAITHFULNESS_EVALUATION_PROMPT.format(
+            context_text=context_text[:2000],
+            answer=answer[:1000]
+        )
         
         try:
             from langchain_core.messages import HumanMessage

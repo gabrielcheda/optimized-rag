@@ -30,7 +30,6 @@ def main(agent_id = "user_demo_agent"):
         return
     
     # Initialize agent
-    agent_id = agent_id
     print(f"Initializing MemGPT RAG agent: {agent_id}")
     
     try:

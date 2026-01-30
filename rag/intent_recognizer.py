@@ -111,50 +111,6 @@ class IntentRecognizer:
             context_info=context_info
         )
     
-
-    def _map_intent_string(self, intent_str: Optional[str]) -> QueryIntent:
-        """Map string to QueryIntent enum"""
-        if not intent_str:
-            return QueryIntent.QUESTION_ANSWERING
-        
-        intent_str = intent_str.lower()
-        
-        # Direct mapping
-        for intent in QueryIntent:
-            if intent.value in intent_str:
-                return intent
-        
-        # Keyword mapping
-        if any(word in intent_str for word in ["question", "what", "how", "why", "qa"]):
-            return QueryIntent.QUESTION_ANSWERING
-        
-        if any(word in intent_str for word in ["summarize", "summary", "overview"]):
-            return QueryIntent.SUMMARIZATION
-        
-        if any(word in intent_str for word in ["compare", "comparison", "difference", "versus"]):
-            return QueryIntent.COMPARISON
-        
-        if any(word in intent_str for word in ["verify", "fact", "check", "true"]):
-            return QueryIntent.FACT_CHECKING
-        
-        if any(word in intent_str for word in ["multi", "complex", "reasoning", "step"]):
-            return QueryIntent.MULTI_HOP_REASONING
-        
-        if any(word in intent_str for word in ["clarify", "explain", "more", "detail"]):
-            return QueryIntent.CLARIFICATION
-        
-        if any(word in intent_str for word in ["chat", "talk", "hello", "hi"]):
-            return QueryIntent.CONVERSATIONAL
-        
-        if any(word in intent_str for word in ["upload", "create", "delete", "run"]):
-            return QueryIntent.INSTRUCTION
-        
-        if any(word in intent_str for word in ["search", "find", "look"]):
-            return QueryIntent.SEARCH
-        
-        # Default
-        return QueryIntent.QUESTION_ANSWERING
-    
     def get_retrieval_strategy(self, intent: QueryIntent | None) -> Dict[str, Any]:
         """
         Get recommended retrieval strategy for intent
