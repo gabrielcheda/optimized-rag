@@ -3,6 +3,7 @@ Ensemble Verification System
 Combines multiple verification strategies for robust claim verification
 """
 
+import hashlib
 import logging
 import math
 import re
@@ -11,19 +12,64 @@ from typing import Any, Dict, List, Tuple
 logger = logging.getLogger(__name__)
 
 
+_embedding_cache: Dict[str, List[float]] = {}
+_cache_hits = 0
+_cache_misses = 0
+
+
+def _get_content_hash(content: str) -> str:
+    """Generate hash for content to use as cache key"""
+    return hashlib.md5(content.encode()).hexdigest()
+
+
+def get_cache_stats() -> Dict[str, int]:
+    """Get embedding cache statistics"""
+    global _cache_hits, _cache_misses
+    total = _cache_hits + _cache_misses
+    hit_rate = (_cache_hits / total * 100) if total > 0 else 0
+    return {
+        "hits": _cache_hits,
+        "misses": _cache_misses,
+        "total": total,
+        "hit_rate": hit_rate,
+        "cache_size": len(_embedding_cache)
+    }
+
+
 class EnsembleVerifier:
     """Verifies claims using multiple strategies and combines results"""
 
-    def __init__(self, llm, embedding_service):
+    def __init__(
+        self,
+        llm,
+        embedding_service,
+        keyword_threshold: float = 0.3,
+        embedding_threshold: float = 0.65,
+        ensemble_agreement: int = 1
+    ):
         """
         Initialize ensemble verifier
 
         Args:
             llm: Language model for LLM-based verification
             embedding_service: Embedding service for similarity-based verification
+            keyword_threshold: Minimum Jaccard similarity for keyword matching (0-1)
+            embedding_threshold: Minimum cosine similarity for embedding matching (0-1)
+            ensemble_agreement: Minimum number of methods that must agree (1-3)
         """
         self.llm = llm
         self.embedding_service = embedding_service
+        self.keyword_threshold = keyword_threshold
+        self.embedding_threshold = embedding_threshold
+        self.ensemble_agreement = ensemble_agreement
+
+        self.max_cache_size = 500
+
+        logger.info(
+            f"EnsembleVerifier initialized: keyword_threshold={keyword_threshold}, "
+            f"embedding_threshold={embedding_threshold}, ensemble_agreement={ensemble_agreement}, "
+            f"embedding_cache_enabled=True"
+        )
 
     def verify_claim(
         self, claim: str, documents: List[Dict[str, Any]], max_chars_per_doc: int = 2000
@@ -39,16 +85,9 @@ class EnsembleVerifier:
         Returns:
             Dict with verification results
         """
-        # Strategy 1: LLM verification (most accurate but expensive)
         llm_result = self._llm_verification(claim, documents, max_chars_per_doc)
-
-        # Strategy 2: Keyword matching (fast and cheap)
         keyword_result = self._keyword_verification(claim, documents)
-
-        # Strategy 3: Embedding similarity (balanced)
         embedding_result = self._embedding_verification(claim, documents)
-
-        # Combine results using weighted voting
         final_supported, final_confidence = self._combine_results(
             llm_result, keyword_result, embedding_result
         )
@@ -103,7 +142,6 @@ Evaluation:"""
 
             supported = "supported: yes" in content
 
-            # Extract confidence
             confidence = 0.5
             for line in response.content.split("\n"):
                 if "confidence:" in line.lower():
@@ -125,7 +163,6 @@ Evaluation:"""
         self, claim: str, documents: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Keyword-based verification (fastest)"""
-        # Extract keywords from claim
         claim_words = set(re.findall(r"\b\w+\b", claim.lower()))
         stop_words = {
             "the",
@@ -159,48 +196,70 @@ Evaluation:"""
             content = doc.get("content", "").lower()
             doc_words = set(re.findall(r"\b\w+\b", content))
 
-            # Jaccard similarity
             intersection = claim_keywords & doc_words
             union = claim_keywords | doc_words
             score = len(intersection) / len(union) if union else 0
 
-            # Bonus for exact phrase match
             if claim.lower() in content:
                 score += 0.3
 
             best_match_score = max(best_match_score, score)
 
-        supported = best_match_score > 0.4
+        supported = best_match_score > self.keyword_threshold
         confidence = min(best_match_score, 1.0)
 
         return {"supported": supported, "confidence": confidence, "method": "keyword"}
+
+    def _get_cached_embedding(self, text: str) -> List[float]:
+        """Get embedding from cache or generate and cache it"""
+        global _embedding_cache, _cache_hits, _cache_misses
+
+        content_hash = _get_content_hash(text)
+
+        if content_hash in _embedding_cache:
+            _cache_hits += 1
+            return _embedding_cache[content_hash]
+
+        _cache_misses += 1
+
+        embedding = self.embedding_service.generate_embedding(text)
+
+        if len(_embedding_cache) >= self.max_cache_size:
+            oldest_key = next(iter(_embedding_cache))
+            del _embedding_cache[oldest_key]
+
+        _embedding_cache[content_hash] = embedding
+        return embedding
 
     def _embedding_verification(
         self, claim: str, documents: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Embedding similarity-based verification (balanced)"""
         try:
-            claim_embedding = self.embedding_service.generate_embedding(claim)
+            claim_embedding = self._get_cached_embedding(claim)
 
             best_similarity = 0.0
 
             for doc in documents:
-                # Generate embedding for document content
                 content = doc.get("content", "")
                 if not content:
                     continue
 
-                # Truncate if too long
                 content_truncated = content[:2000]
-                doc_embedding = self.embedding_service.generate_embedding(
-                    content_truncated
-                )
+                doc_embedding = self._get_cached_embedding(content_truncated)
 
                 similarity = self._cosine_similarity(claim_embedding, doc_embedding)
                 best_similarity = max(best_similarity, similarity)
 
-            supported = best_similarity > 0.60  # Relaxed from 0.75
+            supported = best_similarity > self.embedding_threshold
             confidence = best_similarity
+
+            stats = get_cache_stats()
+            if stats["total"] % 50 == 0 and stats["total"] > 0:
+                logger.info(
+                    f"Embedding cache stats: {stats['hits']}/{stats['total']} hits "
+                    f"({stats['hit_rate']:.1f}%), size={stats['cache_size']}"
+                )
 
             return {
                 "supported": supported,
@@ -231,35 +290,29 @@ Evaluation:"""
         Returns:
             Tuple of (supported: bool, confidence: float)
         """
-        # Weights for each method
         weights = {
-            "llm": 0.5,  # Highest weight for LLM
-            "keyword": 0.3,  # Medium weight for keywords
-            "embedding": 0.2,  # Lower weight for embeddings
+            "llm": 0.5,
+            "keyword": 0.3,
+            "embedding": 0.2,
         }
 
-        # Weighted confidence score
         weighted_confidence = (
             llm_result["confidence"] * weights["llm"]
             + keyword_result["confidence"] * weights["keyword"]
             + embedding_result["confidence"] * weights["embedding"]
         )
 
-        # Voting: at least 2 out of 3 methods must agree
         votes = [
             llm_result["supported"],
             keyword_result["supported"],
             embedding_result["supported"],
         ]
 
-        supported = sum(votes) >= 2
+        supported = sum(votes) >= self.ensemble_agreement
 
-        # Adjust confidence based on agreement
         if sum(votes) == 3:
-            # All agree - high confidence
             weighted_confidence = min(weighted_confidence * 1.2, 1.0)
         elif sum(votes) == 1:
-            # Only one agrees - low confidence
             weighted_confidence = weighted_confidence * 0.7
 
         logger.info(

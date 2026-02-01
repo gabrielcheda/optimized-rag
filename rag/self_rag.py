@@ -218,14 +218,21 @@ class SelfRAGEvaluator:
         # Extract individual claims from answer
         claims = self._extract_claims(answer)
         logger.info(f"Extracted {len(claims)} claims from answer")
-        
-        # Verify each claim against documents (with increased context)
+
+        MAX_CLAIMS_TO_VERIFY = 5
+        if len(claims) > MAX_CLAIMS_TO_VERIFY:
+            logger.info(
+                f"Limiting verification to {MAX_CLAIMS_TO_VERIFY} claims "
+                f"(skipping {len(claims) - MAX_CLAIMS_TO_VERIFY})"
+            )
+            claims = claims[:MAX_CLAIMS_TO_VERIFY]
+
         claim_verifications = []
         for claim in claims:
             support = self._find_supporting_evidence(
-                claim, 
+                claim,
                 retrieved_docs,
-                max_chars_per_doc=2500  # Increased from 1000 (was 300) for better context matching
+                max_chars_per_doc=2500
             )
             claim_verifications.append({
                 'claim': claim,
@@ -234,7 +241,6 @@ class SelfRAGEvaluator:
                 'evidence': support['text']
             })
         
-        # Calculate overall support
         if claim_verifications:
             supported_count = sum(1 for c in claim_verifications if c['supported'])
             support_ratio = supported_count / len(claim_verifications)
@@ -243,13 +249,11 @@ class SelfRAGEvaluator:
             support_ratio = 0.0
             avg_confidence = 0.0
         
-        # Determine if answer is supported
         is_supported = support_ratio >= MIN_SUPPORT_RATIO
-        has_hallucination = support_ratio < 0.5  # More than 50% unsupported = hallucination
-        
-        # Build context summary for logging (using full context now)
+        has_hallucination = support_ratio < 0.5
+
         docs_content = "\n\n".join([
-            doc.get('content', '')[:1000]  # Increased from 300
+            doc.get('content', '')[:1000]
             for doc in retrieved_docs[:3]
         ])
         
@@ -292,7 +296,6 @@ Evaluation:"""
             response = self.llm.invoke(messages)
             evaluation = self._parse_answer_evaluation(response.content)
             
-            # Override with claim-level verification results
             evaluation['is_supported'] = is_supported
             evaluation['has_hallucination'] = has_hallucination
             evaluation['support_ratio'] = support_ratio
@@ -333,15 +336,12 @@ Evaluation:"""
         Returns:
             Tuple of (should_reretrieve, reason)
         """
-        # Check retrieval relevance
         if not retrieval_eval.get('is_relevant', True):
             return True, "Documents not relevant"
-        
-        # OPTIMIZATION: Increased threshold from 0.5 to 0.7 for better quality control
+
         if retrieval_eval.get('confidence', 1.0) < 0.7:
             return True, "Low retrieval confidence"
-        
-        # Check answer quality if provided
+
         if answer_eval:
             if not answer_eval.get('is_supported', True):
                 return True, "Answer not supported"
@@ -376,8 +376,8 @@ Evaluation:"""
             elif line.startswith("REASONING:"):
                 reasoning = line.replace("REASONING:", "").strip()
         
-        should_reretrieve = not is_relevant or confidence < 0.5
-        
+        should_reretrieve = (not is_relevant) and (confidence < 0.3)
+
         return {
             "is_relevant": is_relevant,
             "confidence": confidence,

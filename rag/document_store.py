@@ -5,7 +5,6 @@ Manages documents in PostgreSQL with chunking and indexing
 
 import logging
 import json
-from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 

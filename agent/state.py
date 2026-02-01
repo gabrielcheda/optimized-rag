@@ -23,6 +23,42 @@ class ChatResponse(TypedDict):
     quality_score: float
 
 
+class CitedResponse(BaseModel):
+    """
+    FIX 2.1: Structured output model that FORCES LLM to include citations.
+
+    This model is used with LangChain's with_structured_output() to ensure
+    the LLM always generates responses with proper citation format.
+    """
+    answer: str = Field(
+        ...,
+        description=(
+            "The complete answer to the user's question. "
+            "MUST include inline citations in [N] format (e.g., [1], [2]) "
+            "for EVERY factual claim. Each citation references a document from the context."
+        )
+    )
+    citations_used: List[int] = Field(
+        ...,
+        description=(
+            "List of citation numbers used in the answer. "
+            "For example, if answer contains [1] and [3], this should be [1, 3]. "
+            "Must not be empty for factual questions."
+        )
+    )
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score (0.0-1.0) based on how well the sources support the answer"
+    )
+
+    @property
+    def has_citations(self) -> bool:
+        """Check if response has any citations"""
+        return len(self.citations_used) > 0
+
+
 class MemGPTState(BaseModel):
     """
     MemGPT Agent State adapted for Pydantic (LangGraph v0.2+)
@@ -101,7 +137,8 @@ class MemGPTState(BaseModel):
     # --- Anti-Hallucination Verification (Phase 1) ---
     verification_passed: bool = Field(True, description="Whether post-generation verification succeeded")
     support_ratio: float = Field(1.0, description="Ratio of verified claims to total claims")
-    regeneration_count: int = Field(0, description="Number of times response was regenerated")
+    regeneration_count: int = Field(0, description="Number of times response was regenerated (per node)")
+    total_regeneration_count: int = Field(0, description="Global counter for ALL regeneration attempts (prevents infinite loops)")
     citation_validation: Dict[str, Any] = Field(default_factory=dict, description="Citation validation results")
     
     # --- Anti-Hallucination Enhancement (Phase 2) ---

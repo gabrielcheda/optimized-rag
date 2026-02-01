@@ -41,7 +41,6 @@ from rag import (
     WebSearchTool,
 )
 
-# Import modular RAG nodes
 from rag.nodes import (
     chain_of_thought_node,
     check_context_node,
@@ -73,10 +72,8 @@ class MemGPTRAGAgent:
     def __init__(self, agent_id: str, memory_manager: MemoryManager | None = None):
         self.agent_id = agent_id
 
-        # Initialize database operations (shared instance)
         self.db_ops = DatabaseOperations()
 
-        # Initialize memory manager
         if memory_manager:
             self.memory_manager = memory_manager
         else:
@@ -97,15 +94,12 @@ class MemGPTRAGAgent:
         # Initialize RAG components (needs self.llm)
         self._initialize_rag()
 
-        # Create tools
         memory_tools = create_memory_tools(self.memory_manager)
         rag_tools = create_rag_tools(self.document_store, self.web_search)
         self.all_tools = memory_tools + rag_tools
 
-        # Bind tools to LLM
         self.llm_with_tools = self.llm.bind_tools(self.all_tools)
 
-        # Build graph
         self.graph = self._build_graph()
 
         logger.info(f"MemGPT RAG Agent initialized: {agent_id}")
@@ -121,7 +115,6 @@ class MemGPTRAGAgent:
             logger.warning("optimization_config not found, using defaults")
             optimization_settings = None
 
-        # Initialize cost tracker
         if optimization_settings and optimization_settings.enable_cost_tracking:
             from utils.cost_tracker import get_cost_tracker
 
@@ -169,12 +162,10 @@ class MemGPTRAGAgent:
             self.kg_extractor = None
             self.kg_retriever = None
 
-        # Initialize data wrangler for text cleaning and quality scoring
         from rag.data_wrangler import DataWrangler
 
         data_wrangler = DataWrangler(enable_dedup=True, min_quality_score=0.3)
 
-        # Document store
         self.document_store = DocumentStore(
             database_ops=self.db_ops,
             embedding_service=self.embedding_service,
@@ -235,10 +226,8 @@ class MemGPTRAGAgent:
         else:
             self.weight_manager = None
 
-        # MMR diversifier
         self.mmr = MMRDiversifier(lambda_param=config.MMR_LAMBDA)
 
-        # RRF fusion
         self.rrf = ReciprocalRankFusion(k=config.RRF_K)
 
         # Self-RAG evaluator with ensemble verification
@@ -363,7 +352,6 @@ class MemGPTRAGAgent:
         )
         workflow.add_node("update_memory", lambda s: update_memory_node(s, self))  # type: ignore
 
-        # Set entry point
         workflow.set_entry_point("receive_input")
 
         # Add edges - Paper-compliant workflow: Intent → Rewrite → Memory → Route → Retrieve → CoT → Generate
@@ -494,6 +482,7 @@ class MemGPTRAGAgent:
             verification_passed=True,
             support_ratio=1.0,
             regeneration_count=0,
+            total_regeneration_count=0,
             citation_validation={},
             consistency_result={},
             uncertainty_info={},

@@ -108,6 +108,49 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
             "should_reretrieve": False,
         }
     
+    # FIX 3.7: Self-RAG → TIER 3 Escalation
+    # If Self-RAG detects irrelevance and we're still at TIER 1/2, trigger web search
+    is_relevant = retrieval_eval.get("is_relevant", True)
+    relevance_confidence = retrieval_eval.get("confidence", 1.0)
+    current_tier = getattr(state, "retrieval_tier", "TIER_2")
+    
+    if (
+        not is_relevant 
+        and relevance_confidence < 0.3 
+        and current_tier in ["TIER_1", "TIER_2"]
+        and hasattr(agent, "hierarchical_retriever")
+    ):
+        logger.warning(
+            f"⚠️ Self-RAG detected low relevance ({relevance_confidence:.2f}) "
+            f"after {current_tier} - escalating to TIER 3 web search"
+        )
+        
+        try:
+            # Trigger agentic web search
+            tier_3_results = agent.hierarchical_retriever.tier_3_agentic_search(
+                query=query,
+                existing_context=[doc.get("content", "") for doc in diverse_results[:3]]
+            )
+            
+            if tier_3_results and len(tier_3_results) > 0:
+                logger.info(f"✅ TIER 3 web search returned {len(tier_3_results)} results")
+                
+                # Merge web results with existing context
+                diverse_results.extend(tier_3_results)
+                
+                # Re-evaluate with new web context
+                if config.ENABLE_SELF_RAG:
+                    retrieval_eval = agent.self_rag.evaluate_retrieval(query, diverse_results)
+                    logger.info(
+                        f"Re-evaluation after TIER 3: relevant={retrieval_eval.get('is_relevant')}, "
+                        f"confidence={retrieval_eval.get('confidence', 0):.2f}"
+                    )
+            else:
+                logger.warning("TIER 3 web search returned no additional results")
+                
+        except Exception as e:
+            logger.error(f"TIER 3 escalation failed: {e}", exc_info=True)
+    
     # Phase 2: Consistency checking (detect contradictions)
     consistency_result = {}
     if config.ENABLE_CONSISTENCY_CHECK and len(diverse_results) >= 2:

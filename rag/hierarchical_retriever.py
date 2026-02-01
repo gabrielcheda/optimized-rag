@@ -657,3 +657,46 @@ Be CONSERVATIVE: Only use web_search when truly necessary to save costs."""
             'avg_confidence_tier_3': 0.0
         }
         logger.info("Statistics reset")
+    
+    def tier_3_agentic_search(
+        self,
+        query: str,
+        existing_context: List[str] = [],
+        agent_id: str = "system",
+        top_k: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Public method to trigger TIER 3 agentic search
+        Used for retroactive escalation from Self-RAG evaluation
+        
+        Args:
+            query: Search query
+            existing_context: Existing context from TIER 1/2 (for LLM decision)
+            agent_id: Agent identifier
+            top_k: Number of results
+            
+        Returns:
+            List of web search results
+        """
+        if not self.enable_tier_3:
+            logger.warning("TIER 3 is disabled in config")
+            return []
+        
+        # Format existing context for TIER 3 LLM decision
+        tier_1_2_context = []
+        if existing_context:
+            for idx, content in enumerate(existing_context):
+                tier_1_2_context.append({
+                    'content': content,
+                    'score': 0.7,  # Placeholder score
+                    'source': 'existing_tier_1_2'
+                })
+        
+        logger.info(f"Triggering TIER 3 agentic search for query: '{query}'")
+        
+        return self._retrieve_tier_3(
+            agent_id=agent_id,
+            query=query,
+            top_k=top_k,
+            tier_1_2_context=tier_1_2_context
+        )

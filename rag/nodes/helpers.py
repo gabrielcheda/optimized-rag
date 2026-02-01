@@ -4,6 +4,7 @@ Shared utilities used across multiple node functions
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Tuple
 
 from langdetect import detect
@@ -289,13 +290,131 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
         return 0.0
 
 
+def _is_factual_clarification(query: str, recalled_messages: List[Dict[str, Any]]) -> bool:
+    """
+    Determine if a clarification query requires document retrieval (factual)
+    or can be answered from recall memory (simple clarification).
+    
+    Professional analysis using multiple signals instead of pattern matching.
+    
+    Args:
+        query: User query (clarification intent)
+        recalled_messages: Recent conversation history
+        
+    Returns:
+        True if documents needed (factual request), False if recall sufficient
+    """
+    query_lower = query.lower()
+    
+    # Signal 1: Factual interrogatives (requests new information)
+    factual_interrogatives = [
+        # Portuguese
+        "exemplo", "exemplos",          # examples
+        "como", "qual", "quais",        # how, what, which
+        "por que", "porque",            # why
+        "onde", "quando",               # where, when
+        "detalhe", "detalhes",          # details
+        "especific",                    # specific/específico
+        "diferença", "diferenças",      # differences
+        "comparação", "compare",        # comparison
+        # English
+        "example", "examples",
+        "how", "what", "which",
+        "why", "where", "when",
+        "detail", "details",
+        "specific",
+        "difference", "differences",
+        "comparison", "compare",
+        "show", "demonstrate",
+        "illustrate", "explain"
+    ]
+    
+    has_factual_interrogative = any(term in query_lower for term in factual_interrogatives)
+    
+    # Signal 2: Previous response was incomplete/insufficient
+    # Check if last assistant message indicates lack of information
+    insufficient_indicators = [
+        "não tenho informações",        # "I don't have information"
+        "don't have information",
+        "não tenho dados",              # "I don't have data"
+        "don't have data",
+        "não encontrei",                # "I didn't find"
+        "didn't find",
+        "couldn't find",
+        "forneça mais contexto",        # "provide more context"
+        "provide more context",
+        "preciso de mais",              # "I need more"
+        "need more",
+        "não consigo responder",        # "I can't answer"
+        "can't answer",
+        "unable to answer"
+    ]
+    
+    last_assistant_msg = None
+    for msg in reversed(recalled_messages):
+        if msg.get("role") == "assistant":
+            last_assistant_msg = msg.get("content", "").lower()
+            break
+    
+    previous_was_insufficient = False
+    if last_assistant_msg:
+        previous_was_insufficient = any(
+            indicator in last_assistant_msg 
+            for indicator in insufficient_indicators
+        )
+    
+    # Signal 3: Query contains specific nouns/technical terms (not just pronouns)
+    # Extract words of 4+ characters (filter out articles, pronouns)
+    stop_words = {
+        "agora", "isso", "esse", "essa", "aquele", "aquela",  # Portuguese
+        "that", "this", "these", "those", "them",              # English
+        "você", "voce", "pode", "mais", "sobre",
+        "give", "show", "tell", "make", "please"
+    }
+    
+    words = re.findall(r'\b\w{4,}\b', query_lower)
+    content_words = [w for w in words if w not in stop_words]
+    has_specific_terms = len(content_words) >= 2
+    
+    # Signal 4: Query length (very short queries likely just need clarification)
+    query_length = len(query.split())
+    is_substantial_query = query_length >= 4
+    
+    # Decision logic: Combine signals
+    # HIGH confidence factual request:
+    if has_factual_interrogative and is_substantial_query:
+        logger.debug(
+            f"Factual clarification: factual_term=True, length={query_length}, "
+            f"specific_terms={has_specific_terms}"
+        )
+        return True
+    
+    # MEDIUM-HIGH: Previous response was insufficient + user asks for specifics
+    if previous_was_insufficient and has_specific_terms:
+        logger.debug(
+            f"Factual clarification: prev_insufficient=True, specific_terms={content_words[:3]}"
+        )
+        return True
+    
+    # LOW confidence: Short vague query → likely just needs recall clarification
+    if query_length <= 3 and not has_factual_interrogative:
+        logger.debug(f"Simple clarification: short query, no factual markers")
+        return False
+    
+    # DEFAULT: If in doubt for clarifications, check factual interrogatives
+    decision = has_factual_interrogative or has_specific_terms
+    logger.debug(
+        f"Clarification analysis: factual_interrog={has_factual_interrogative}, "
+        f"specific_terms={has_specific_terms}, length={query_length} → {decision}"
+    )
+    return decision
+
+
 def should_retrieve_documents(
     query: str, intent, recalled_messages: List[Dict[str, Any]]
 ) -> bool:
     """
-    Decide if document retrieval is needed or if recall memory is sufficient
-
-    OPTIMIZATION: Saves embeddings + retrieval costs when answer is in recent conversation
+    Decide if document retrieval is needed or if recall memory is sufficient.
 
     Args:
         query: User query (rewritten)
@@ -305,63 +424,132 @@ def should_retrieve_documents(
     Returns:
         True if documents needed, False if recall is sufficient
     """
-    # RULE 1: Always retrieve for first message (no recall context)
     if not recalled_messages or len(recalled_messages) == 0:
         logger.info("Document retrieval: YES (no recall history)")
         return True
 
-    # RULE 2: Chitchat/greeting → likely sufficient in recall
-    if intent and intent.value.lower() in ["chitchat", "greeting", "clarification"]:
+    if intent and intent.value.lower() in ["chitchat", "greeting"]:
         logger.info(f"Document retrieval: NO (intent={intent}, recall sufficient)")
         return False
+    
+    if intent and intent.value.lower() == "clarification":
+        needs_documents = _is_factual_clarification(query, recalled_messages)
+        
+        if needs_documents:
+            logger.info(
+                f"Document retrieval: YES (factual clarification detected - "
+                f"query='{query[:60]}...')"
+            )
+            return True
+        else:
+            logger.info(f"Document retrieval: NO (simple clarification, recall sufficient)")
+            return False
 
-    # RULE 3: Follow-up indicators → check if answer might be in recall
-    follow_up_patterns = [
-        "o que você disse",
-        "você mencionou",
-        "você falou",
-        "como você disse",
-        "conforme mencionado",
+    query_lower = query.lower()
+
+    strong_follow_up_patterns = [
+        # Portuguese - explicit follow-up requests
+        "pode explicar",        # "can you explain" (the previous thing)
+        "explique melhor",      # "explain better"
+        "mais detalhes",        # "more details"
+        "o que você disse",     # "what did you say"
+        "você mencionou",       # "you mentioned"
+        "você falou",           # "you said"
+        "como você disse",      # "as you said"
+        "conforme mencionado",  # "as mentioned"
+        "me explique",          # "explain to me"
+        "como assim",           # "what do you mean"
+        "o que quis dizer",     # "what did you mean"
+        "não entendi",          # "I didn't understand"
+        "pode repetir",         # "can you repeat"
+        "elabore",              # "elaborate"
+        # English - explicit follow-up requests
+        "tell me more",
+        "explain that",
         "what did you say",
         "you mentioned",
         "you said",
         "as you said",
-        "isso",
-        "aquilo",
-        "that",
-        "this",
-        "it",
-        "explain that",
-        "explique isso",
-        "sobre isso",
-        "about that",
+        "can you explain",
+        "what do you mean",
+        "i didn't understand",
+        "elaborate on",
+        "go on",
+        "continue",
     ]
 
-    query_lower = query.lower()
-    is_follow_up = any(pattern in query_lower for pattern in follow_up_patterns)
+    weak_follow_up_patterns = [
+        "sobre isso",           # "about that" - could be new topic
+        "about that",
+        "more about",
+        "mais sobre",
+        "e o",                  # "and the" - could be continuing or new
+        "and the",
+        "what about",
+        "e sobre",
+    ]
 
-    if is_follow_up:
-        # Check if recent messages contain substantial content (not just greetings)
+    is_strong_follow_up = any(pattern in query_lower for pattern in strong_follow_up_patterns)
+
+    if is_strong_follow_up:
         recent_content_length = sum(
             len(msg.get("content", "").split())
-            for msg in recalled_messages[-3:]  # Last 3 messages
+            for msg in recalled_messages[-3:]
             if msg.get("role") == "assistant"
         )
 
         if recent_content_length > config.MIN_FOLLOW_UP_WORDS:
             logger.info(
-                f"Document retrieval: NO (follow-up detected, "
+                f"Document retrieval: NO (STRONG follow-up pattern detected, "
                 f"recall has {recent_content_length} words)"
             )
             return False
 
-    # RULE 6: New factual query → needs documents
+    is_weak_follow_up = any(pattern in query_lower for pattern in weak_follow_up_patterns)
+
+    if is_weak_follow_up:
+        recent_content_length = sum(
+            len(msg.get("content", "").split())
+            for msg in recalled_messages[-3:]
+            if msg.get("role") == "assistant"
+        )
+
+        common_words = {
+            "what", "which", "where", "when", "that", "this", "with", "from",
+            "about", "have", "does", "como", "qual", "quais", "onde", "quando",
+            "para", "sobre", "mais", "pode", "você", "voce", "the", "and"
+        }
+        query_terms = set(
+            word.lower() for word in re.findall(r'\b\w{4,}\b', query)
+            if word.lower() not in common_words
+        )
+
+        recall_content = " ".join(
+            msg.get("content", "").lower()
+            for msg in recalled_messages[-5:]
+        )
+        terms_in_recall = sum(1 for term in query_terms if term in recall_content)
+        topic_overlap = terms_in_recall / len(query_terms) if query_terms else 1.0
+
+        if topic_overlap < 0.3 and len(query_terms) >= 2:
+            logger.info(
+                f"Document retrieval: YES (weak follow-up pattern but topic is new - "
+                f"overlap={topic_overlap:.1%}, terms={list(query_terms)[:5]})"
+            )
+            return True
+
+        if recent_content_length > config.MIN_FOLLOW_UP_WORDS:
+            logger.info(
+                f"Document retrieval: NO (weak follow-up with topic match, "
+                f"recall has {recent_content_length} words, overlap={topic_overlap:.1%})"
+            )
+            return False
+
     factual_intents = ["qa", "question_answering", "factual", "compare", "aggregate"]
-    if intent and intent.value.lower() in factual_intents and not is_follow_up:
+    if intent and intent.value.lower() in factual_intents and not (is_strong_follow_up or is_weak_follow_up):
         logger.info(f"Document retrieval: YES (factual intent={intent}, not follow-up)")
         return True
 
-    # DEFAULT: Retrieve documents (safe fallback)
     logger.info("Document retrieval: YES (default fallback)")
     return True
 

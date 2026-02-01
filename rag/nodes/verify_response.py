@@ -7,8 +7,8 @@ PHASE 1: Critical anti-hallucination layer
 import logging
 from typing import Any, Dict
 
+import config
 from agent.state import MemGPTState
-from config import MIN_SUPPORT_RATIO
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,22 @@ def verify_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
     Returns:
         Dict with verification_passed, support_ratio, and unsupported_claims
     """
+    # CRITICAL: Check global regeneration counter first (prevents infinite loops)
+    total_regenerations = getattr(state, 'total_regeneration_count', 0)
+    
+    if total_regenerations >= config.MAX_REGENERATION_ATTEMPTS:
+        logger.warning(
+            f"⛔ Maximum global regenerations reached ({total_regenerations}/{config.MAX_REGENERATION_ATTEMPTS}). "
+            f"Accepting current response to prevent infinite loop."
+        )
+        return {
+            "verification_passed": True,  # Force accept
+            "support_ratio": 0.5,
+            "max_attempts_reached": True,
+            "warning": "Response quality may be suboptimal - max regeneration attempts reached",
+            "verification_method": "force_accept_max_attempts"
+        }
+    
     answer = state.agent_response
     
     if not answer or len(answer.strip()) < 20:
@@ -81,7 +97,7 @@ def verify_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
         ]
         
         # Decision: Pass if support ratio meets threshold
-        verification_passed = support_ratio >= MIN_SUPPORT_RATIO
+        verification_passed = support_ratio >= config.MIN_SUPPORT_RATIO
         
         if not verification_passed:
             logger.warning(
@@ -102,7 +118,8 @@ def verify_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
             "total_claims": len(verification_results),
             "supported_claims": supported_count,
             "verification_method": "claim_level",
-            "verification_details": verification_results
+            "verification_details": verification_results,
+            "total_regeneration_count": total_regenerations + (0 if verification_passed else 1)  # Increment GLOBAL counter on failure
         }
         
     except Exception as e:
@@ -125,14 +142,19 @@ def should_regenerate(state: MemGPTState, agent) -> str:
         "accept" if verification passed or max attempts reached
     """
     verification_passed = getattr(state, "verification_passed", True)
-    regeneration_count = getattr(state, "regeneration_count", 0)
-    max_regenerations = 2  # Max 2 regeneration attempts
+    total_regenerations = getattr(state, "total_regeneration_count", 0)
+    max_regenerations = config.MAX_REGENERATION_ATTEMPTS
     
-    if not verification_passed and regeneration_count < max_regenerations:
-        logger.info(f"Triggering regeneration (attempt {regeneration_count + 1}/{max_regenerations})")
+    if not verification_passed and total_regenerations < max_regenerations:
+        logger.info(
+            f"Triggering regeneration (global attempt {total_regenerations + 1}/{max_regenerations})"
+        )
         return "regenerate"
     
-    if regeneration_count >= max_regenerations:
-        logger.warning(f"Max regeneration attempts reached, accepting current response")
+    if total_regenerations >= max_regenerations:
+        logger.warning(
+            f"Max global regeneration attempts reached ({total_regenerations}), "
+            f"accepting current response"
+        )
     
     return "accept"

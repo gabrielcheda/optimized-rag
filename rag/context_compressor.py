@@ -1,12 +1,6 @@
 """
 Context Compressor
 Compresses retrieved context to essential information, reducing tokens while maintaining relevance.
-
-Paper recommendation: Context compression is CRITICAL for:
-- Reducing API costs (less tokens)
-- Improving response quality (less noise)
-- Increasing relevance (focus on essentials)
-- Allowing more documents in context
 """
 
 from typing import List, Dict, Any, Tuple
@@ -41,7 +35,6 @@ class ContextCompressor:
         self.sentences_per_doc = sentences_per_doc
         self.embedding_service = embedding_service
         
-        # Phase 2: Hybrid scoring (70% semantic + 30% lexical)
         self.use_semantic_scoring = embedding_service is not None
         self.semantic_weight = 0.7
         self.lexical_weight = 0.3
@@ -57,49 +50,62 @@ class ContextCompressor:
         query: str,
         documents: List[Dict[str, Any]],
         max_tokens: int | None = None,
-        query_intent: QueryIntent = QueryIntent.QUESTION_ANSWERING
+        query_intent: QueryIntent = QueryIntent.QUESTION_ANSWERING,
+        confidence: float = 1.0
     ) -> List[Dict[str, Any]]:
         """
-        Compress context by selecting most relevant sentences
-        
-        Paper recommendation: Extract only query-relevant sentences,
-        removing redundancy and noise.
-        
+        Compress context by selecting most relevant sentences.
+
         Args:
             query: User query
             documents: Retrieved documents to compress
             max_tokens: Override default max_tokens
-            query_intent: Query intent for dynamic threshold (qa, chat, search, etc.)
-            
+            query_intent: Query intent for dynamic threshold
+            confidence: Query confidence (0-1). Lower = less aggressive compression
+
         Returns:
             List of compressed documents with metadata
         """
         if not documents:
             return []
         
-        # OPTIMIZATION: Quality pre-filtering - skip compression on low-relevance docs
-        # Dynamic threshold based on query intent (INCREASED for anti-hallucination)
+        if confidence < 0.5:
+            logger.warning(
+                f"Low confidence ({confidence:.2f}) - skipping compression to preserve all context"
+            )
+            return self._concatenate_without_compression(documents, max_tokens or self.max_tokens)
+        
+        if confidence < 0.7:
+            sentences_per_doc = self.sentences_per_doc + 2
+            threshold_multiplier = 0.7
+            logger.info(
+                f"Moderate confidence ({confidence:.2f}) - using conservative compression "
+                f"({sentences_per_doc} sentences/doc)"
+            )
+        else:
+            sentences_per_doc = self.sentences_per_doc
+            threshold_multiplier = 1.0
+        
         base_threshold = config.COMPRESSION_INTENT_THRESHOLDS.get(
             query_intent.value if hasattr(query_intent, 'value') else str(query_intent),
             0.45  # Default
         )
         
-        # CRITICAL FIX: If very few documents, lower threshold dramatically
-        # (cross-language queries have low embedding scores but valid content)
+        base_threshold = base_threshold * threshold_multiplier
+
         if len(documents) <= 5:
             max_doc_score = max((d.get('score', 0) for d in documents), default=0)
-            if max_doc_score < 0.1:  # All docs have terrible embedding scores
-                relevance_threshold = config.COMPRESSION_MIN_THRESHOLD  # Accept anything above 0.5%
-                logger.warning(f"Very low document scores (max={max_doc_score:.3f}), using minimal threshold {relevance_threshold}")
+            if max_doc_score < 0.5:
+                relevance_threshold = config.COMPRESSION_MIN_THRESHOLD
+                logger.warning(f"Low document scores (max={max_doc_score:.3f}), using minimal threshold {relevance_threshold}")
             else:
                 relevance_threshold = base_threshold
         else:
             relevance_threshold = base_threshold
         
-        # Filter out low-quality documents before compression
         filtered_docs = []
         for doc in documents:
-            relevance = doc.get('score', 1.0)  # CrossEncoder score from reranking
+            relevance = doc.get('score', 1.0)
             if relevance >= relevance_threshold:
                 filtered_docs.append(doc)
             else:
@@ -123,13 +129,11 @@ class ContextCompressor:
             content = doc.get('content', '')
             total_original_length += len(content)
             
-            # Split into sentences
             sentences = self._split_sentences(content)
             
             if not sentences:
                 continue
             
-            # Phase 2: Score each sentence using hybrid approach
             if self.use_semantic_scoring:
                 scored_sentences = self._score_sentences_hybrid(query, sentences)
             else:
@@ -139,18 +143,15 @@ class ContextCompressor:
                     score = self._score_sentence_lexical(query, sent)
                     scored_sentences.append((sent, score))
             
-            # Select top sentences
             scored_sentences.sort(key=lambda x: x[1], reverse=True)
-            top_sentences = [s[0] for s in scored_sentences[:self.sentences_per_doc]]
+            top_sentences = [s[0] for s in scored_sentences[:sentences_per_doc]]
             
-            # Reconstruct in original order (preserve flow)
             top_sentences_set = set(top_sentences)
             ordered_sentences = [s for s in sentences if s in top_sentences_set]
             
             compressed_content = ' '.join(ordered_sentences)
             total_compressed_length += len(compressed_content)
             
-            # Create compressed document
             compressed_doc = {
                 **doc,
                 'content': compressed_content,
@@ -165,7 +166,6 @@ class ContextCompressor:
             
             compressed.append(compressed_doc)
         
-        # Calculate stats
         tokens_saved = total_original_length - total_compressed_length
         compression_ratio = total_compressed_length / total_original_length if total_original_length > 0 else 0
         
@@ -178,54 +178,28 @@ class ContextCompressor:
         return compressed
     
     def _split_sentences(self, text: str) -> List[str]:
-        """
-        Split text into sentences
-        
-        Uses simple regex splitting on punctuation.
-        Can be enhanced with NLTK or spaCy for better accuracy.
-        """
+        """Split text into sentences."""
         if not text:
             return []
         
-        # Split on sentence-ending punctuation followed by space
         sentences = re.split(r'[.!?]+\s+', text)
-        
-        # Filter out very short sentences (likely fragments)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
         
         return sentences
     
     def _score_sentences_hybrid(self, query: str, sentences: List[str]) -> List[Tuple[str, float]]:
-        """
-        Phase 2: Score sentences using hybrid semantic + lexical approach
-        
-        Args:
-            query: User query
-            sentences: List of sentences to score
-            
-        Returns:
-            List of (sentence, score) tuples
-        """
+        """Score sentences using hybrid semantic + lexical approach."""
         try:
-            # Type guard: ensure embedding_service is available
             if not self.embedding_service:
                 raise ValueError("Embedding service not available")
             
-            # Compute query embedding
             query_embedding = self.embedding_service.generate_embedding(query)
-            
-            # Compute sentence embeddings in batch
             sentence_embeddings = self.embedding_service.generate_embeddings_batch(sentences)
             
             scored = []
             for sent, sent_emb in zip(sentences, sentence_embeddings):
-                # Semantic score (cosine similarity)
                 semantic_score = self._cosine_similarity(query_embedding, sent_emb)
-                
-                # Lexical score (keyword overlap)
                 lexical_score = self._score_sentence_lexical(query, sent)
-                
-                # Hybrid score (70% semantic + 30% lexical)
                 hybrid_score = (
                     self.semantic_weight * semantic_score + 
                     self.lexical_weight * lexical_score
@@ -237,7 +211,6 @@ class ContextCompressor:
             
         except Exception as e:
             logger.error(f"Semantic scoring failed, falling back to lexical: {e}")
-            # Fallback to lexical scoring
             return [(sent, self._score_sentence_lexical(query, sent)) for sent in sentences]
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
@@ -263,30 +236,13 @@ class ContextCompressor:
         return dot_product / (magnitude1 * magnitude2)
     
     def _score_sentence_lexical(self, query: str, sentence: str) -> float:
-        """
-        Score sentence relevance to query
-        
-        Simple keyword overlap method. Can be enhanced with:
-        - Embedding-based similarity
-        - TF-IDF weighting
-        - Named entity matching
-        
-        Args:
-            query: User query
-            sentence: Sentence to score
-            
-        Returns:
-            Relevance score (0.0-1.0)
-        """
-        # Normalize
+        """Score sentence relevance to query using keyword overlap."""
         query_lower = query.lower()
         sentence_lower = sentence.lower()
         
-        # Extract words (remove punctuation)
         query_words = set(re.findall(r'\b\w+\b', query_lower))
         sent_words = set(re.findall(r'\b\w+\b', sentence_lower))
-        
-        # Remove common stop words (simple list)
+
         stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'is', 'was', 'are', 'were', 'be', 'been', 'being'}
         query_words -= stop_words
         sent_words -= stop_words
@@ -294,16 +250,65 @@ class ContextCompressor:
         if not query_words:
             return 0.0
         
-        # Calculate keyword overlap
         overlap = len(query_words & sent_words)
         score = overlap / len(query_words)
-        
-        # Bonus for exact phrase match
+
         if query_lower in sentence_lower:
             score += 0.2
-        
-        # Normalize to 0-1
+
         return min(score, 1.0)
+    
+    def _concatenate_without_compression(
+        self, documents: List[Dict[str, Any]], max_tokens: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Fallback: Concatenate documents without compression when confidence is low
+        
+        This preserves all context to avoid losing critical information in uncertain queries.
+        
+        Args:
+            documents: Documents to concatenate
+            max_tokens: Maximum tokens (approximate as chars)
+            
+        Returns:
+            List of documents (possibly truncated to fit max_tokens)
+        """
+        result = []
+        total_length = 0
+        
+        for doc in documents:
+            content = doc.get('content', '')
+            content_length = len(content)
+            
+            if total_length + content_length <= max_tokens:
+                # Include full document
+                result.append({
+                    **doc,
+                    'compressed': False,
+                    'preservation_reason': 'low_confidence_skip_compression'
+                })
+                total_length += content_length
+            else:
+                # Truncate last document to fit
+                remaining = max_tokens - total_length
+                if remaining > 200:  # Only add if meaningful space remains
+                    truncated_content = content[:remaining]
+                    result.append({
+                        **doc,
+                        'content': truncated_content,
+                        'compressed': False,
+                        'truncated': True,
+                        'original_length': content_length,
+                        'truncated_length': remaining
+                    })
+                break
+        
+        logger.info(
+            f"Concatenated {len(result)} documents without compression "
+            f"(total: {total_length} chars, limit: {max_tokens})"
+        )
+        
+        return result
     
     def get_compression_stats(self, compressed_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

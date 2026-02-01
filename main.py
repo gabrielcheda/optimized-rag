@@ -8,7 +8,6 @@ from utils.logging_config import setup_logging
 from agent.rag_graph import MemGPTRAGAgent
 from database.connection import db
 
-# Setup logging
 setup_logging(log_level="INFO")
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,6 @@ def main(agent_id = "user_demo_agent"):
         print("Please check your connection string in config.py\n")
         return
     
-    # Initialize agent
     print(f"Initializing MemGPT RAG agent: {agent_id}")
     
     try:
@@ -69,7 +67,6 @@ def main(agent_id = "user_demo_agent"):
                 print("=" * 60 + "\n")
                 continue
             
-            # Get agent response
             print("\nMemGPT: ", end="", flush=True)
             response = agent.chat(user_input)
             print(response)

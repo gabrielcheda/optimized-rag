@@ -7,7 +7,6 @@ import logging
 from utils.logging_config import setup_logging
 from services.document_uploader import DocumentUploader
 
-# Setup logging
 setup_logging(log_level="INFO")
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,6 @@ def main():
     print(f"Diretório: sample/docs/rag")
     print()
     
-    # Criar uploader
     uploader = DocumentUploader(agent_id=agent_id)
     
     # Upload da pasta RAG (inclui dw-grpo.pdf, RAG-PAPER.pdf, system1-system2.pdf)
@@ -44,7 +42,6 @@ def main():
     print("=" * 60)
     print(f"✓ Arquivos processados: {result['successful']}/{result['total_files']}")
     print(f"✓ Total de chunks: {result['total_chunks']}")
-    # print(f"✓ Tempo: {result['processing_time']:.2f}s")
     print()
     
     if result['successful'] > 0:

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def should_use_cot(state, agent) -> str:
     """
-    Decide if Chain-of-Thought reasoning is needed (Paper-compliant)
+    Decide if Chain-of-Thought reasoning is needed.
 
     CoT is triggered for:
     - Multi-hop questions (comparison, aggregation)
@@ -26,31 +26,24 @@ def should_use_cot(state, agent) -> str:
     if not config.ENABLE_COT_REASONING:
         return "skip"
 
-    # Check query intent
     intent_enum = state.query_intent
-    if intent_enum and intent_enum in [
+    is_multi_hop_intent = intent_enum and intent_enum in [
         QueryIntent.COMPARISON,
         QueryIntent.MULTI_HOP_REASONING,
-    ]:
+    ]
+
+    if is_multi_hop_intent:
         logger.info(f"CoT triggered by intent: {intent_enum.value}")
         return "cot"
 
-    # Check query complexity (word count, nested questions)
     query = state.user_input
     word_count = len(query.split())
-    has_multiple_questions = query.count("?") > 1 or " and " in query.lower()
+    has_multiple_questions = query.count("?") > 1
 
-    if word_count > config.COT_WORD_COUNT_THRESHOLD or has_multiple_questions:
+    if has_multiple_questions and word_count > config.COT_WORD_COUNT_THRESHOLD:
         logger.info(
             f"CoT triggered by complexity: {word_count} words, multiple questions: {has_multiple_questions}"
         )
-        return "cot"
-
-    # Check if evaluation suggests low confidence
-    quality_eval = state.quality_eval
-    confidence = quality_eval.get("confidence", 1.0)
-    if confidence < config.COT_CONFIDENCE_THRESHOLD:
-        logger.info(f"CoT triggered by low confidence: {confidence:.2f}")
         return "cot"
 
     return "skip"
@@ -68,18 +61,16 @@ def decide_next_action(state, agent) -> str:
         logger.info("Tool calls detected, routing to process_tool_calls")
         return "tools"
 
-    # Check if query should be refined (delegates to should_refine_query)
     refinement_decision = should_refine_query(state, agent)
     if refinement_decision == "refine":
         return "refine"
 
-    # Default: continue to memory update
     return "continue"
 
 
 def should_refine_query(state, agent) -> str:
     """
-    Decide if query should be refined (Paper-compliant: iterative refinement)
+    Decide if query should be refined.
 
     Refinement is triggered when:
     - Low context quality
@@ -93,11 +84,10 @@ def should_refine_query(state, agent) -> str:
         return "continue"
 
     refinement_count = state.refinement_count
-    if refinement_count >= config.MAX_REFINEMENT_ATTEMPTS:  # Max refinement attempts
+    if refinement_count >= config.MAX_REFINEMENT_ATTEMPTS:
         logger.info("Max refinement attempts reached")
         return "continue"
 
-    # Check context quality
     quality_eval = state.quality_eval
     is_relevant = quality_eval.get("is_relevant", True)
     confidence = quality_eval.get("confidence", 1.0)
@@ -108,7 +98,6 @@ def should_refine_query(state, agent) -> str:
         )
         return "refine"
 
-    # Check if answer is too short (might indicate insufficient context)
     answer = state.agent_response or ""
     if len(answer.split()) < config.MIN_ANSWER_WORD_COUNT:
         logger.info("Query refinement triggered (short answer)")

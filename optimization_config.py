@@ -91,7 +91,6 @@ class OptimizationSettings(BaseSettings):
     )
 
 
-# Create global optimization settings instance
 optimization_settings = OptimizationSettings()
 
 # Export for backward compatibility

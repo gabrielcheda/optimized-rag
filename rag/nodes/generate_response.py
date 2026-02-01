@@ -9,12 +9,25 @@ from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 
 import config
-from agent.state import MemGPTState
+from agent.state import CitedResponse, MemGPTState
 from prompts.generate_response import CLARIFICATION_INSTRUCTION, FEW_SHOT_EXAMPLES, SYSTEM_PROMPT_TEMPLATE
 from rag.nodes.helpers import check_context_quality, enrich_context_with_memory
 from rag.citation_validator import CitationValidator
 
 logger = logging.getLogger(__name__)
+
+# FIX 2.2: Simplified prompt for structured output (less tokens, more focused)
+STRUCTURED_OUTPUT_PROMPT = """You are a helpful AI assistant. Answer the user's question using ONLY the provided documents.
+
+CITATION RULES:
+1. Every factual claim MUST have a [N] citation (e.g., [1], [2])
+2. Use ONLY information from the documents below
+3. If you cannot find the information, say "I cannot answer this with the provided documents"
+
+DOCUMENTS:
+{documents}
+
+Answer the question with proper citations."""
 
 
 def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
@@ -61,10 +74,36 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
             "source_map": {},
         }
 
+    # CRITICAL: Additional check for empty final_context (prevents hallucination)
+    if not state.final_context or len(state.final_context) == 0:
+        logger.error("❌ CRITICAL: final_context is empty despite passing context_quality check!")
+        fallback_message = "I cannot answer this question as I don't have relevant documents in my knowledge base. Please try rephrasing your question or check if documents were uploaded correctly."
+        return {
+            "agent_response": fallback_message,
+            "messages": [{"role": "assistant", "content": fallback_message}],
+            "verification_passed": False,
+            "no_context_available": True,
+            "source_map": {},
+        }
+
+    # Build explicit context summary to force LLM awareness
+    context_summary = "\n📚 DOCUMENTS PROVIDED (USE ONLY THESE):\n\n"
+    for i, doc in enumerate(state.final_context[:5]):
+        source = doc.get('source', 'Unknown')
+        score = doc.get('score', 0.0)
+        content_preview = doc.get('content', '')[:500]
+        context_summary += f"[{i+1}] {source} (relevance: {score:.2f})\n"
+        context_summary += f"Content: {content_preview}...\n\n"
+    
+    context_summary += "🚨 IMPORTANT: Answer using ONLY the documents [1]-[{0}] above. Do NOT use training knowledge.\n".format(len(state.final_context[:5]))
+    
+    # Prepend context summary to enriched_context
+    enriched_context_with_summary = context_summary + "\n" + enriched_context
+
     # Build system prompt with few-shot examples and context
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         few_shot_examples=FEW_SHOT_EXAMPLES, 
-        enriched_context=enriched_context
+        enriched_context=enriched_context_with_summary
     )
     
     # Add clarification instruction if needed
@@ -76,16 +115,71 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
         HumanMessage(content=state.user_input),
     ]
 
-    # Generate response
-    response = agent.llm_with_tools.invoke(messages)
+    # FIX 2.3: Log prompt size for debugging truncation issues
+    prompt_chars = len(system_prompt) + len(state.user_input)
+    prompt_tokens_estimate = prompt_chars // 4  # Rough estimate
+    logger.info(f"Prompt size: {prompt_chars} chars (~{prompt_tokens_estimate} tokens)")
+    if prompt_tokens_estimate > 12000:
+        logger.warning(f"Prompt may be too long ({prompt_tokens_estimate} tokens) - risk of truncation")
 
-    # Extract tool calls if present
+    # FIX 2.2: Use structured output for factual queries to FORCE citations
     tool_calls = []
-    if hasattr(response, "tool_calls") and response.tool_calls:
-        tool_calls = response.tool_calls
-        logger.info(f"LLM requested {len(tool_calls)} tool calls")
+    response = None  # Initialize to avoid UnboundLocalError in cost tracking
+    use_structured_output = (
+        not is_clarification
+        and state.final_context
+        and len(state.final_context) > 0
+        and hasattr(agent, 'llm')  # Check if we have access to base LLM
+    )
 
-    answer = response.content if hasattr(response, "content") else str(response)
+    if use_structured_output:
+        try:
+            # Build simplified prompt for structured output
+            docs_text = "\n\n".join([
+                f"[{i+1}] {doc.get('source', 'Unknown')}: {doc.get('content', '')[:1500]}"
+                for i, doc in enumerate(state.final_context[:5])
+            ])
+            structured_prompt = STRUCTURED_OUTPUT_PROMPT.format(documents=docs_text)
+
+            # Use structured output to force citation format
+            structured_llm = agent.llm.with_structured_output(CitedResponse)
+            structured_messages = [
+                SystemMessage(content=structured_prompt),
+                HumanMessage(content=state.user_input),
+            ]
+
+            cited_response = structured_llm.invoke(structured_messages)
+
+            # Extract answer with forced citations
+            answer = cited_response.answer
+            citations_used = cited_response.citations_used
+
+            logger.info(
+                f"Structured output: {len(citations_used)} citations used, "
+                f"confidence={cited_response.confidence:.2f}"
+            )
+
+            # Validate citations are present
+            if not citations_used:
+                logger.warning("Structured output returned empty citations - falling back to standard generation")
+                # Fall through to standard generation
+                raise ValueError("Empty citations from structured output")
+
+        except Exception as e:
+            logger.warning(f"Structured output failed: {e} - falling back to standard generation")
+            # Fall back to standard generation
+            response = agent.llm_with_tools.invoke(messages)
+            if hasattr(response, "tool_calls") and response.tool_calls:
+                tool_calls = response.tool_calls
+                logger.info(f"LLM requested {len(tool_calls)} tool calls")
+            answer = response.content if hasattr(response, "content") else str(response)
+    else:
+        # Standard generation (for clarification or when structured output not applicable)
+        response = agent.llm_with_tools.invoke(messages)
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            tool_calls = response.tool_calls
+            logger.info(f"LLM requested {len(tool_calls)} tool calls")
+        answer = response.content if hasattr(response, "content") else str(response)
 
     # Phase 1: Citation validation (if enabled)
     citation_validation = {}
@@ -146,6 +240,8 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
             
             # If REQUIRE_BOTH_SCORES_HIGH is enabled, require BOTH faithfulness AND factuality
             if config.REQUIRE_BOTH_SCORES_HIGH:
+                # Extract faithfulness score (with safe fallback)
+                faithfulness_score = faithfulness.get("score", 0.7) if faithfulness else 0.7
                 both_low = (faithfulness_score < 0.7) and (factuality_score < 0.5)
                 if both_low or (should_refuse and not factuality_passed):
                     auto_refused = True
@@ -156,6 +252,8 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
                         f"factuality: {factuality_score:.2f} ({factuality_result['quality_level']})"
                     )
                     
+                    # FIX 1.1: Increment regeneration counter to prevent infinite loop
+                    current_regen_count = getattr(state, 'total_regeneration_count', 0)
                     return {
                         "agent_response": fallback_message,
                         "messages": [{"role": "assistant", "content": fallback_message}],
@@ -168,6 +266,8 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
                         "tool_calls": [],
                         "auto_refused": True,
                         "citation_validation": citation_validation,
+                        "total_regeneration_count": current_regen_count + 1,
+                        "verification_passed": False,
                     }
             else:
                 # Original behavior: refuse only if factuality is very low
@@ -180,6 +280,8 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
                         f"{factuality_score:.2f} ({factuality_result['quality_level']})"
                     )
                     
+                    # FIX 1.1: Increment regeneration counter to prevent infinite loop
+                    current_regen_count = getattr(state, 'total_regeneration_count', 0)
                     return {
                         "agent_response": fallback_message,
                         "messages": [{"role": "assistant", "content": fallback_message}],
@@ -192,6 +294,8 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
                         "tool_calls": [],
                         "auto_refused": True,
                         "citation_validation": citation_validation,
+                        "total_regeneration_count": current_regen_count + 1,
+                        "verification_passed": False,
                     }
 
             logger.info(
@@ -207,7 +311,8 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
     # Phase 2: Uncertainty quantification
     uncertainty_info = {}
     if config.ENABLE_UNCERTAINTY_QUANTIFICATION:
-        faithfulness_score = faithfulness.get("score", 0.0)
+        # Extract faithfulness score with safe fallback
+        faithfulness_score = faithfulness.get("score", 0.0) if faithfulness else 0.0
         uncertainty_info = _quantify_uncertainty(
             answer=answer,
             faithfulness_score=faithfulness_score,
@@ -254,7 +359,8 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
     hitl_reason = None
     if config.ENABLE_HUMAN_IN_THE_LOOP and not auto_refused:
         factuality_score = factuality_result.get("factuality_score", 1.0)
-        faithfulness_score = faithfulness.get("score", 1.0)
+        # Extract faithfulness score with safe fallback
+        faithfulness_score = faithfulness.get("score", 1.0) if faithfulness else 1.0
         
         # Gray zone detection: 0.4 <= score < 0.6
         in_gray_zone = (
@@ -283,16 +389,13 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
             logger.warning(
                 f"HUMAN-IN-THE-LOOP triggered: {hitl_reason}"
             )
-            
-            # Add notice to response
-            answer = (
-                f"{answer}\n\n"
-                f"⚠️ **Note:** This response requires human review due to: {hitl_reason}. "
-                f"Please verify the information before using it."
-            )
+
+            # FIX 1.2: Store warning in metadata instead of appending to answer
+            # This prevents Self-RAG from extracting meta-warnings as claims
+            # The warning should be displayed to user AFTER verification, not before
 
     # Track LLM costs if cost tracker enabled
-    if agent.cost_tracker and hasattr(response, "usage"):
+    if agent.cost_tracker and response is not None and hasattr(response, "usage"):
         try:
             usage = getattr(response, "usage", None)
             if usage:
@@ -303,6 +406,14 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
                 )
         except Exception as e:
             logger.debug(f"Cost tracking failed: {e}")
+
+    # FIX 1.2: Build HITL warning message separately (to append AFTER verification)
+    hitl_warning_message = None
+    if requires_human_review and hitl_reason:
+        hitl_warning_message = (
+            f"\n\n⚠️ **Note:** This response requires human review due to: {hitl_reason}. "
+            f"Please verify the information before using it."
+        )
 
     return {
         "agent_response": answer,
@@ -317,6 +428,7 @@ def generate_response_node(state: MemGPTState, agent) -> Dict[str, Any]:
         "temporal_validation": temporal_validation if 'temporal_validation' in locals() else {},
         "requires_human_review": requires_human_review if 'requires_human_review' in locals() else False,
         "hitl_reason": hitl_reason if 'hitl_reason' in locals() else None,
+        "hitl_warning_message": hitl_warning_message,  # FIX 1.2: Append to response AFTER verification
     }
 
 
