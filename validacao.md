@@ -13,7 +13,7 @@ R:
 ---
 
 * **Diferencie os conceitos de "Internal Evaluation" e "External Evaluation" de acordo com o levantamento sobre avaliação de RAG.** 
-cls
+
 
 ---
 

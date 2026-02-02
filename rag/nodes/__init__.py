@@ -8,8 +8,10 @@ from .check_context import check_context_node
 from .decisions import (
     decide_next_action,
     should_refine_query,
+    should_try_web_search,
     should_use_cot,
 )
+from .web_search_fallback import web_search_fallback_node
 from .generate_response import generate_response_node
 from .helpers import (
     apply_mmr,
@@ -52,10 +54,12 @@ __all__ = [
     "query_refinement_node",
     "process_tool_calls_node",
     "update_memory_node",
+    "web_search_fallback_node",
     # Decision functions
     "should_use_cot",
     "decide_next_action",
     "should_refine_query",
+    "should_try_web_search",
     "should_regenerate",
     # Helper functions
     "format_context_with_citations",

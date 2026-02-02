@@ -27,13 +27,13 @@ class Settings(BaseSettings):
     mmr_lambda: float = Field(default=0.7, ge=0.0, le=1.0, description="Balance relevance vs diversity")
     rrf_k: int = Field(default=60, description="Reciprocal rank fusion constant")
     enable_self_rag: bool = Field(default=True, description="Enable Self-RAG evaluation")
-    relevance_threshold: float = Field(default=0.75, ge=0.0, le=1.0, description="Minimum relevance score")
+    relevance_threshold: float = Field(default=0.80, ge=0.0, le=1.0, description="Minimum relevance score (was 0.75)")  # FASE 1: Increased
     max_reretrieve_attempts: int = Field(default=2, description="Max re-retrieval attempts")
     semantic_similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Threshold for semantic chunking")
 
     enable_context_compression: bool = Field(default=True, description="Enable context compression")
     context_compression_max_tokens: int = Field(default=2000, description="Max tokens after compression")
-    context_compression_sentences_per_doc: int = Field(default=8, description="Sentences to keep per document")
+    context_compression_sentences_per_doc: int = Field(default=12, description="Sentences to keep per document (was 8)")  # FASE 1: Increased
 
     enable_temporal_boost: bool = Field(default=True, description="Enable temporal boosting")
     recency_weight: float = Field(default=0.15, ge=0.0, le=0.3, description="Weight for temporal boosting")
@@ -58,9 +58,9 @@ class Settings(BaseSettings):
 
     enable_post_generation_verification: bool = Field(default=True, description="Verify claims after generation")
     enable_citation_validation: bool = Field(default=True, description="Validate citation format and completeness")
-    min_factuality_score: float = Field(default=0.4, ge=0.0, le=1.0, description="Minimum factuality to accept")
+    min_factuality_score: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum factuality to accept (was 0.4)")  # FASE 1: Increased
     require_both_scores_high: bool = Field(default=True, description="Require both faithfulness AND factuality high")
-    max_regeneration_attempts: int = Field(default=2, description="Max times to regenerate failed responses")
+    max_regeneration_attempts: int = Field(default=1, description="Max times to regenerate failed responses (was 2)")  # CORRIGIDO
 
     enable_uncertainty_quantification: bool = Field(default=True, description="Calculate and show uncertainty scores")
     show_confidence_in_response: bool = Field(default=False, description="Append confidence to response text")
@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     metrics_log_interval: int = Field(default=10, description="Log metrics every N queries")
 
     embedding_cache_size: int = Field(default=1000, description="LRU cache size for embeddings")
+    
+    # FASE 1: Anti-hallucination thresholds
+    min_support_ratio: float = Field(default=0.70, ge=0.0, le=1.0, description="Minimum ratio of supported claims (adjusted from 0.90)")  # CORRIGIDO
+    cross_encoder_score_threshold: float = Field(default=0.15, ge=0.0, le=1.0, description="Threshold to filter weak results (was 0.1)")  # FASE 1: Increased
+    
+    # FASE 1: Performance and timeout settings
+    max_verification_time_ms: int = Field(default=5000, description="Timeout for verification in ms")
+    enable_async_verification: bool = Field(default=True, description="Enable async verification when possible")
+    verification_cache_size: int = Field(default=100, description="Size of verification cache")
 
     tavily_api_key: str = Field(default="", description="Tavily API key for web search (optional)")
 
@@ -151,6 +160,18 @@ ENABLE_ENSEMBLE_SAMPLING = settings.enable_ensemble_sampling
 ENABLE_METRICS_LOGGING = settings.enable_metrics_logging
 METRICS_LOG_INTERVAL = settings.metrics_log_interval
 EMBEDDING_CACHE_SIZE = settings.embedding_cache_size
+
+# FASE 6.1: Web Search Fallback - Triggers web search when factuality is POOR
+ENABLE_WEB_SEARCH_FALLBACK = getattr(settings, 'enable_web_search_fallback', True)
+WEB_SEARCH_FALLBACK_THRESHOLD = getattr(settings, 'web_search_fallback_threshold', 0.35)
+
+# FASE 1: New constants
+MIN_SUPPORT_RATIO_SETTING = settings.min_support_ratio
+CROSS_ENCODER_SCORE_THRESHOLD_SETTING = settings.cross_encoder_score_threshold
+MAX_VERIFICATION_TIME_MS = settings.max_verification_time_ms
+ENABLE_ASYNC_VERIFICATION = settings.enable_async_verification
+VERIFICATION_CACHE_SIZE = settings.verification_cache_size
+
 TAVILY_API_KEY = settings.tavily_api_key
 POSTGRES_URI = settings.postgres_uri
 MAX_CONTEXT_TOKENS = settings.max_context_tokens
@@ -166,7 +187,7 @@ EMBEDDING_BATCH_SIZE = 100
 
 MAX_CHARS_PER_DOC = 3000
 MIN_QUALITY_SCORE = 0.5
-MIN_SUPPORT_RATIO = 0.75
+MIN_SUPPORT_RATIO = 0.70  # CORRIGIDO: 0.90 era muito rigoroso, reduzido para 70%
 
 MIN_AVG_RELEVANCE_SCORE = 0.35
 MIN_FOLLOW_UP_WORDS = 50
@@ -180,7 +201,7 @@ MIN_ANSWER_WORD_COUNT = 20
 
 RERANK_TOP_K_DEFAULT = 15
 MMR_DIVERSITY_TOP_K = 5
-CROSS_ENCODER_SCORE_THRESHOLD = 0.1
+CROSS_ENCODER_SCORE_THRESHOLD = 0.15  # FASE 1: Was 0.1 → Filtrar resultados fracos
 PROGRESSIVE_TOP_K_CONFIG = {
     0: 15,
     1: 10,

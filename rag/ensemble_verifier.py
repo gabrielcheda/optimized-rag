@@ -22,7 +22,7 @@ def _get_content_hash(content: str) -> str:
     return hashlib.md5(content.encode()).hexdigest()
 
 
-def get_cache_stats() -> Dict[str, int]:
+def get_cache_stats() -> Dict[str, int | float]:
     """Get embedding cache statistics"""
     global _cache_hits, _cache_misses
     total = _cache_hits + _cache_misses
@@ -43,9 +43,10 @@ class EnsembleVerifier:
         self,
         llm,
         embedding_service,
-        keyword_threshold: float = 0.3,
-        embedding_threshold: float = 0.65,
-        ensemble_agreement: int = 1
+        keyword_threshold: float = 0.25,     # FASE 6.1: Lowered from 0.45 - too strict for paraphrasing
+        embedding_threshold: float = 0.60,   # FASE 6.1: Lowered from 0.78 - too strict for cross-language
+        ensemble_agreement: int = 2,         # FASE 6: Require 2+ methods to agree (was 1)
+        llm_override_confidence: float = 0.85  # FASE 6.1: LLM can override if confidence >= this
     ):
         """
         Initialize ensemble verifier
@@ -56,19 +57,21 @@ class EnsembleVerifier:
             keyword_threshold: Minimum Jaccard similarity for keyword matching (0-1)
             embedding_threshold: Minimum cosine similarity for embedding matching (0-1)
             ensemble_agreement: Minimum number of methods that must agree (1-3)
+            llm_override_confidence: FASE 6.1 - If LLM confidence >= this, bypass ensemble requirement
         """
         self.llm = llm
         self.embedding_service = embedding_service
         self.keyword_threshold = keyword_threshold
         self.embedding_threshold = embedding_threshold
         self.ensemble_agreement = ensemble_agreement
+        self.llm_override_confidence = llm_override_confidence
 
         self.max_cache_size = 500
 
         logger.info(
             f"EnsembleVerifier initialized: keyword_threshold={keyword_threshold}, "
             f"embedding_threshold={embedding_threshold}, ensemble_agreement={ensemble_agreement}, "
-            f"embedding_cache_enabled=True"
+            f"llm_override_confidence={llm_override_confidence}, embedding_cache_enabled=True"
         )
 
     def verify_claim(
@@ -285,41 +288,101 @@ Evaluation:"""
         self, llm_result: Dict, keyword_result: Dict, embedding_result: Dict
     ) -> Tuple[bool, float]:
         """
-        Combine results from multiple methods using weighted voting
+        FASE 6.1: Adaptive combination with LLM high-confidence override
+
+        Requires 2+ methods to agree WITH good confidence for precision.
+        HOWEVER, if LLM has very high confidence (>=0.85), it can override
+        the ensemble requirement - this handles cross-language and paraphrasing
+        scenarios where keyword/embedding methods naturally fail.
 
         Returns:
             Tuple of (supported: bool, confidence: float)
         """
-        weights = {
+        llm_conf = llm_result["confidence"]
+        keyword_conf = keyword_result["confidence"]
+        embedding_conf = embedding_result["confidence"]
+        llm_supported = llm_result["supported"]
+
+        # Base weights
+        base_weights = {
             "llm": 0.5,
             "keyword": 0.3,
             "embedding": 0.2,
         }
 
+        # Adjust weights by confidence (reward high-confidence methods)
+        adaptive_weights = {
+            "llm": base_weights["llm"] * (1 + 0.3 * llm_conf),
+            "keyword": base_weights["keyword"] * (1 + 0.3 * keyword_conf),
+            "embedding": base_weights["embedding"] * (1 + 0.3 * embedding_conf),
+        }
+
+        # Normalize weights
+        total_weight = sum(adaptive_weights.values())
+        for key in adaptive_weights:
+            adaptive_weights[key] /= total_weight
+
         weighted_confidence = (
-            llm_result["confidence"] * weights["llm"]
-            + keyword_result["confidence"] * weights["keyword"]
-            + embedding_result["confidence"] * weights["embedding"]
+            llm_conf * adaptive_weights["llm"]
+            + keyword_conf * adaptive_weights["keyword"]
+            + embedding_conf * adaptive_weights["embedding"]
         )
 
-        votes = [
-            llm_result["supported"],
+        # Count votes with minimum confidence threshold
+        min_confidence_for_vote = 0.5
+
+        confident_votes = []
+        if llm_supported and llm_conf >= min_confidence_for_vote:
+            confident_votes.append(("llm", llm_conf))
+        if keyword_result["supported"] and keyword_conf >= min_confidence_for_vote:
+            confident_votes.append(("keyword", keyword_conf))
+        if embedding_result["supported"] and embedding_conf >= min_confidence_for_vote:
+            confident_votes.append(("embedding", embedding_conf))
+
+        raw_votes = sum([
+            llm_supported,
             keyword_result["supported"],
             embedding_result["supported"],
-        ]
+        ])
 
-        supported = sum(votes) >= self.ensemble_agreement
+        # ============================================================
+        # FASE 6.1: LLM HIGH-CONFIDENCE OVERRIDE
+        # ============================================================
+        # When LLM is highly confident AND says supported, trust it even if
+        # keyword/embedding fail (common in cross-language, paraphrasing scenarios)
+        llm_override = (
+            llm_supported and
+            llm_conf >= self.llm_override_confidence
+        )
 
-        if sum(votes) == 3:
-            weighted_confidence = min(weighted_confidence * 1.2, 1.0)
-        elif sum(votes) == 1:
-            weighted_confidence = weighted_confidence * 0.7
+        if llm_override:
+            # LLM override - trust LLM when it's highly confident
+            supported = True
+            # Boost confidence since LLM is very sure
+            weighted_confidence = max(weighted_confidence, llm_conf * 0.9)
+            logger.info(
+                f"FASE 6.1: LLM override activated (conf={llm_conf:.2f} >= {self.llm_override_confidence})"
+            )
+        else:
+            # Standard ensemble voting
+            supported = len(confident_votes) >= self.ensemble_agreement
+
+        # Confidence adjustments based on agreement level
+        if len(confident_votes) == 3:
+            weighted_confidence = min(weighted_confidence * 1.25, 1.0)
+        elif len(confident_votes) == 2:
+            weighted_confidence = min(weighted_confidence * 1.1, 0.95)
+        elif len(confident_votes) == 1 and not llm_override:
+            weighted_confidence = weighted_confidence * 0.7  # Less harsh penalty
+        elif len(confident_votes) == 0:
+            weighted_confidence = weighted_confidence * 0.4
 
         logger.info(
-            f"Ensemble: LLM={llm_result['supported']}, "
-            f"Keyword={keyword_result['supported']}, "
-            f"Embedding={embedding_result['supported']} → "
-            f"Final={supported} (conf={weighted_confidence:.2f})"
+            f"Ensemble: LLM={llm_supported}({llm_conf:.2f}), "
+            f"Keyword={keyword_result['supported']}({keyword_conf:.2f}), "
+            f"Embedding={embedding_result['supported']}({embedding_conf:.2f}) → "
+            f"Confident votes={len(confident_votes)}/{raw_votes}, "
+            f"LLM_override={llm_override}, Final={supported} (conf={weighted_confidence:.2f})"
         )
 
         return supported, weighted_confidence

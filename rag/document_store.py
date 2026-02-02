@@ -12,34 +12,51 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentStore:
-    """Persistent document storage with chunking"""
-    
+    """
+    FASE 6: Persistent document storage with optimized indexing
+
+    Supports both IVFFlat (faster inserts) and HNSW (better recall) indexes.
+    HNSW is recommended for precision-critical applications.
+    """
+
     def __init__(
         self,
         database_ops,
         embedding_service,
         chunking_strategy,
         data_wrangler=None,
-        kg_extractor=None
+        kg_extractor=None,
+        index_type: str = "hnsw",    # FASE 6: HNSW by default for precision
+        ivfflat_lists: int = 100     # FASE 6: Increased from 10 for better quality
     ):
         """
         Initialize document store
-        
+
         Args:
             database_ops: DatabaseOperations instance
             embedding_service: EmbeddingService instance
             chunking_strategy: ChunkingStrategy instance
             data_wrangler: Optional DataWrangler instance
+            kg_extractor: Optional KnowledgeGraphExtractor instance
+            index_type: FASE 6 - 'hnsw' (better recall) or 'ivfflat' (faster inserts)
+            ivfflat_lists: FASE 6 - Number of lists for IVFFlat (default: 100)
         """
         self.db = database_ops
         self.embeddings = embedding_service
         self.chunker = chunking_strategy
         self.wrangler = data_wrangler
         self.kg_extractor = kg_extractor
-        
+        self.index_type = index_type.lower()
+        self.ivfflat_lists = ivfflat_lists
+
         # Get embedding dimension from service
         self.embedding_dim = self.embeddings.get_embedding_dimension()
-        
+
+        logger.info(
+            f"FASE 6 DocumentStore initialized: index_type={self.index_type}, "
+            f"ivfflat_lists={self.ivfflat_lists}, embedding_dim={self.embedding_dim}"
+        )
+
         self._ensure_tables()
     
     def _check_dimension_mismatch(self, cur) -> bool:
@@ -106,26 +123,55 @@ class DocumentStore:
         logger.info("Dropped empty document_chunks table for recreation")
     
     def _create_indexes(self, cur):
-        """Create optimized indexes for document_chunks table"""
-        # Vector index with lists=10 for 32MB maintenance_work_mem compatibility
+        """
+        FASE 6: Create optimized indexes for document_chunks table
+
+        Supports two index types:
+        - HNSW: Better recall, recommended for precision (default in FASE 6)
+        - IVFFlat: Faster inserts, good for high-volume scenarios
+        """
+        # Drop existing vector index to recreate with new settings
         cur.execute("DROP INDEX IF EXISTS document_chunks_embedding_idx")
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
-            ON document_chunks USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 10)
-        """)
-        
+        cur.execute("DROP INDEX IF EXISTS document_chunks_embedding_hnsw_idx")
+
+        if self.index_type == "hnsw":
+            # FASE 6: HNSW index for better recall and precision
+            # m=16: connections per layer (higher = better recall, more memory)
+            # ef_construction=64: build-time search width (higher = better quality)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS document_chunks_embedding_hnsw_idx
+                ON document_chunks USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
+            """)
+            logger.info("FASE 6: Created HNSW index (m=16, ef_construction=64)")
+        else:
+            # IVFFlat index with configurable lists
+            # FASE 6: Increased default from 10 to 100 for better quality
+            cur.execute(f"""
+                CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
+                ON document_chunks USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = {self.ivfflat_lists})
+            """)
+            logger.info(f"Created IVFFlat index (lists={self.ivfflat_lists})")
+
         # B-tree index for agent_id filtering
         cur.execute("DROP INDEX IF EXISTS document_chunks_agent_embedding_idx")
         cur.execute("""
             CREATE INDEX IF NOT EXISTS document_chunks_agent_id_idx
             ON document_chunks(agent_id)
         """)
-        
+
         # Temporal index for recency boosting
         cur.execute("""
             CREATE INDEX IF NOT EXISTS document_chunks_created_at_idx
             ON document_chunks(created_at DESC)
+        """)
+
+        # FASE 6: Composite index for common query pattern (agent_id + embedding)
+        # This helps when filtering by agent before vector search
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS document_chunks_agent_created_idx
+            ON document_chunks(agent_id, created_at DESC)
         """)
     
     def _ensure_tables(self):

@@ -467,6 +467,37 @@ class HierarchicalRetriever:
             logger.error(f"Tier 2 retrieval error: {e}")
             return []
     
+    def _is_conversation_context_query(self, query: str) -> bool:
+        """
+        Check if query is about conversation context itself.
+        Web search would be useless for such queries.
+
+        Examples that should return True:
+        - "qual foi a primeira pergunta?"
+        - "what was the first question?"
+        - "what did I ask earlier?"
+        """
+        import re
+        query_lower = query.lower()
+
+        context_query_patterns = [
+            # Portuguese
+            r"primeira? pergunta", r"ultima? pergunta", r"penultima? pergunta",
+            r"pergunta anterior", r"o que perguntei", r"o que eu perguntei",
+            r"o que voce disse", r"o que você disse", r"o que falamos",
+            r"nossa conversa", r"sobre o que conversamos",
+            # English
+            r"first question", r"last question", r"previous question",
+            r"what did (i|we|you)", r"what (i|we|you) (ask|said|mention)",
+            r"our conversation", r"what we talked", r"what we discussed",
+            r"earlier in (this|our) conversation"
+        ]
+
+        for pattern in context_query_patterns:
+            if re.search(pattern, query_lower):
+                return True
+        return False
+
     def _retrieve_tier_3(
         self,
         agent_id: str,
@@ -476,18 +507,27 @@ class HierarchicalRetriever:
     ) -> List[Dict[str, Any]]:
         """
         Tier 3: AGENTIC retrieval with LLM-driven tool usage
-        
+
         LLM analyzes Tier 1+2 context and DECIDES if it needs:
         - Web search (for current/recent info)
         - Knowledge graph (for entity relationships)
-        
+
         Only calls expensive APIs if LLM determines it's necessary.
-        
+
         Returns:
             List of results from agentic tool usage
         """
         results = []
-        
+
+        # GUARD: Skip web search for conversation context queries
+        # Web search is useless for "what was the first question?" type queries
+        if self._is_conversation_context_query(query):
+            logger.info(
+                f"TIER 3: Query appears to be about conversation context - "
+                f"skipping web search (would not help): '{query[:50]}...'"
+            )
+            return []  # Return empty - caller should use recall memory instead
+
         # Format Tier 1+2 context for LLM
         context_summary = "No local context available."
         if tier_1_2_context:
@@ -668,20 +708,27 @@ Be CONSERVATIVE: Only use web_search when truly necessary to save costs."""
         """
         Public method to trigger TIER 3 agentic search
         Used for retroactive escalation from Self-RAG evaluation
-        
+
         Args:
             query: Search query
             existing_context: Existing context from TIER 1/2 (for LLM decision)
             agent_id: Agent identifier
             top_k: Number of results
-            
+
         Returns:
             List of web search results
         """
         if not self.enable_tier_3:
             logger.warning("TIER 3 is disabled in config")
             return []
-        
+
+        # GUARD: Skip for conversation context queries
+        if self._is_conversation_context_query(query):
+            logger.info(
+                f"TIER 3 agentic search: Skipping for conversation context query: '{query[:50]}...'"
+            )
+            return []
+
         # Format existing context for TIER 3 LLM decision
         tier_1_2_context = []
         if existing_context:

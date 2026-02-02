@@ -12,30 +12,41 @@ logger = logging.getLogger(__name__)
 
 
 class SelectiveReranker:
-    """Intelligently decides when to apply expensive reranking"""
-    
+    """
+    FASE 6: Reranking for precision-critical applications
+
+    In FASE 6 mode, reranking is ALWAYS applied for maximum precision.
+    Selective mode is disabled by default to prioritize precision over cost.
+    """
+
     def __init__(
         self,
         openai_reranker=None,
         cross_encoder_reranker=None,
-        enable_selective: bool = True
+        enable_selective: bool = False  # FASE 6: Disabled by default (always rerank)
     ):
         """
         Initialize selective reranker
-        
+
         Args:
             openai_reranker: OpenAI reranker instance
             cross_encoder_reranker: CrossEncoder reranker instance
             enable_selective: Enable selective reranking logic
+                              FASE 6: Default is False (always rerank for precision)
         """
         self.openai_reranker = openai_reranker
         self.cross_encoder_reranker = cross_encoder_reranker
         self.enable_selective = enable_selective
-        
+
         # Statistics
         self.total_queries = 0
         self.reranking_skipped = 0
         self.reranking_applied = 0
+
+        logger.info(
+            f"FASE 6 SelectiveReranker initialized: enable_selective={enable_selective}, "
+            f"openai={openai_reranker is not None}, cross_encoder={cross_encoder_reranker is not None}"
+        )
     
     def rerank(
         self,
@@ -80,11 +91,37 @@ class SelectiveReranker:
         intent: QueryIntent
     ) -> tuple[bool, str]:
         """
-        Determine if reranking is necessary
-        
+        FASE 6: Determine if reranking is necessary
+
+        In FASE 6, almost all intents trigger reranking for maximum precision.
+
         Returns:
             Tuple of (should_rerank: bool, reason: str)
         """
+        from rag import QueryIntent
+
+        # FASE 6: Expanded list of precision intents (almost everything)
+        PRECISION_INTENTS = {
+            QueryIntent.QUESTION_ANSWERING,
+            QueryIntent.MULTI_HOP_REASONING,
+            QueryIntent.COMPARISON,
+            QueryIntent.FACT_CHECKING,
+            QueryIntent.SUMMARIZATION,
+            QueryIntent.SEARCH,
+        }
+        # FASE 6: Expanded string values for compatibility
+        PRECISION_INTENT_VALUES = {
+            'qa', 'multi_hop', 'compare', 'factual', 'question_answering',
+            'comparison', 'fact_checking', 'summarization', 'search'
+        }
+        
+        # Extrair valor do enum de forma segura
+        intent_value = intent.value if hasattr(intent, 'value') else str(intent).lower()
+        
+        # Verificar tanto o enum quanto o valor string separadamente
+        if intent in PRECISION_INTENTS or intent_value in PRECISION_INTENT_VALUES:
+            return True, f"Precision intent ({intent_value}) - always rerank"
+        
         # Rule 1: Too few results - but FORCE reranking if scores are very low
         # (e.g., cross-language queries where embedding fails but CrossEncoder works)
         if len(results) <= 5:
@@ -135,37 +172,57 @@ class SelectiveReranker:
     ) -> List[Dict[str, Any]]:
         """
         Apply appropriate reranking strategy based on intent
-        
+
         Args:
             query: User query
             results: Results to rerank
-            intent: Query intent
+            intent: Query intent (enum or string)
             top_k: Number to return
-            
+
         Returns:
             Reranked results
         """
+        # FASE 6.1: Get intent value (handle both enum and string)
+        intent_value = intent.value if hasattr(intent, 'value') else str(intent).lower()
+
+        # Factual intent values that benefit from CrossEncoder
+        FACTUAL_INTENTS = {
+            'qa', 'multi_hop', 'compare', 'question_answering',
+            'multi_hop_reasoning', 'comparison', 'fact_checking'
+        }
+
+        # Conversational intent values that can use faster reranking
+        CONVERSATIONAL_INTENTS = {'chat', 'search', 'conversational', 'clarification'}
+
         # Choose reranking strategy based on intent
-        if intent in ['qa', 'multi_hop', 'compare']:
+        if intent_value in FACTUAL_INTENTS:
             # Factual queries: use CrossEncoder (more accurate)
             if self.cross_encoder_reranker and self.cross_encoder_reranker.is_available():
-                logger.debug(f"Using CrossEncoder for {intent}")
+                logger.info(f"Using CrossEncoder for factual intent: {intent_value}")
                 return self.cross_encoder_reranker.rerank(query, results, top_k)
             elif self.openai_reranker:
-                logger.debug(f"CrossEncoder unavailable, using OpenAI for {intent}")
+                logger.info(f"CrossEncoder unavailable, using OpenAI for: {intent_value}")
                 return self.openai_reranker.rerank(query, results, top_k)
-        
-        elif intent in ['chat', 'search']:
+
+        elif intent_value in CONVERSATIONAL_INTENTS:
             # Chat/search: use OpenAI reranker (faster)
             if self.openai_reranker:
-                logger.debug(f"Using OpenAI reranker for {intent}")
+                logger.info(f"Using OpenAI reranker for conversational intent: {intent_value}")
                 return self.openai_reranker.rerank(query, results, top_k)
             elif self.cross_encoder_reranker and self.cross_encoder_reranker.is_available():
-                logger.debug(f"OpenAI unavailable, using CrossEncoder for {intent}")
+                logger.info(f"OpenAI unavailable, using CrossEncoder for: {intent_value}")
                 return self.cross_encoder_reranker.rerank(query, results, top_k)
-        
-        # Fallback: return original results
-        logger.warning("No reranker available, returning original results")
+
+        # FASE 6.1: Default - try any available reranker (don't give up!)
+        if self.cross_encoder_reranker and self.cross_encoder_reranker.is_available():
+            logger.info(f"Using CrossEncoder for unmatched intent: {intent_value}")
+            return self.cross_encoder_reranker.rerank(query, results, top_k)
+        elif self.openai_reranker:
+            logger.info(f"Using OpenAI reranker for unmatched intent: {intent_value}")
+            return self.openai_reranker.rerank(query, results, top_k)
+
+        # No reranker available at all
+        logger.warning(f"No reranker available for intent: {intent_value}, returning original results")
         return results[:top_k]
     
     def get_statistics(self) -> Dict[str, Any]:

@@ -150,3 +150,9 @@ class MemGPTState(BaseModel):
     requires_human_review: bool = Field(False, description="Whether response needs human review (HITL)")
     hitl_reason: Optional[str] = Field(None, description="Reason for human review requirement")
     attribution_map: Dict[str, Any] = Field(default_factory=dict, description="Claim-to-source attribution mapping")
+
+    # --- FASE 6.1: Web Search Fallback ---
+    web_search_attempted: bool = Field(False, description="Whether web search fallback has been attempted")
+    web_search_success: bool = Field(False, description="Whether web search returned useful results")
+    web_search_results_count: int = Field(0, description="Number of web search results retrieved")
+    factuality_score: Dict[str, Any] = Field(default_factory=dict, description="Factuality scoring results")

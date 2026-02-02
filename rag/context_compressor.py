@@ -15,33 +15,41 @@ logger = logging.getLogger(__name__)
 
 
 class ContextCompressor:
-    """Compresses context using relevance-based sentence selection"""
-    
+    """
+    FASE 6: Conservative context compression for maximum precision
+
+    In FASE 6 mode, compression is minimized to preserve all relevant information.
+    Aggressive compression risks losing critical context needed for accurate answers.
+    """
+
     def __init__(
-        self, 
-        max_tokens: int = 2000, 
-        sentences_per_doc: int = 5,
-        embedding_service: EmbeddingService | None = None
+        self,
+        max_tokens: int = 4000,          # FASE 6: Doubled from 2000
+        sentences_per_doc: int = 8,       # FASE 6: Increased from 5
+        embedding_service: EmbeddingService | None = None,
+        conservative_mode: bool = True    # FASE 6: Conservative mode by default
     ):
         """
         Initialize context compressor
-        
+
         Args:
-            max_tokens: Maximum tokens for compressed context
-            sentences_per_doc: Number of top sentences to keep per document
-            embedding_service: Optional embedding service for semantic scoring (Phase 2)
+            max_tokens: Maximum tokens for compressed context (FASE 6: 4000 default)
+            sentences_per_doc: Number of top sentences to keep per document (FASE 6: 8 default)
+            embedding_service: Optional embedding service for semantic scoring
+            conservative_mode: FASE 6 - When True, minimizes compression to preserve context
         """
         self.max_tokens = max_tokens
         self.sentences_per_doc = sentences_per_doc
         self.embedding_service = embedding_service
-        
+        self.conservative_mode = conservative_mode
+
         self.use_semantic_scoring = embedding_service is not None
         self.semantic_weight = 0.7
         self.lexical_weight = 0.3
-        
+
         logger.info(
-            f"ContextCompressor initialized: max_tokens={max_tokens}, "
-            f"sentences_per_doc={sentences_per_doc}, "
+            f"FASE 6 ContextCompressor initialized: max_tokens={max_tokens}, "
+            f"sentences_per_doc={sentences_per_doc}, conservative_mode={conservative_mode}, "
             f"semantic_scoring={'enabled' if self.use_semantic_scoring else 'disabled'}"
         )
     
@@ -54,7 +62,7 @@ class ContextCompressor:
         confidence: float = 1.0
     ) -> List[Dict[str, Any]]:
         """
-        Compress context by selecting most relevant sentences.
+        FASE 6: Conservative compression to preserve context for precision.
 
         Args:
             query: User query
@@ -68,18 +76,37 @@ class ContextCompressor:
         """
         if not documents:
             return []
-        
-        if confidence < 0.5:
+
+        # FASE 6: In conservative mode, skip compression for small document sets
+        # Increased threshold from 5 to 7 to preserve more context
+        if len(documents) <= 7:
+            logger.info(f"FASE 6: Skipping compression - few documents ({len(documents)} ≤7)")
+            return documents
+
+        # FASE 6: Conservative mode - skip compression entirely if enabled and confidence is reasonable
+        if self.conservative_mode and confidence >= 0.6:
+            total_chars = sum(len(d.get('content', '')) for d in documents)
+            max_allowed = (max_tokens or self.max_tokens) * 4  # Approx 4 chars per token
+            if total_chars <= max_allowed:
+                logger.info(
+                    f"FASE 6 Conservative: Skipping compression - content fits "
+                    f"({total_chars} chars ≤ {max_allowed} limit)"
+                )
+                return documents
+
+        # FASE 6: Lower confidence threshold for skipping compression
+        if confidence < 0.6:  # Was 0.5
             logger.warning(
-                f"Low confidence ({confidence:.2f}) - skipping compression to preserve all context"
+                f"FASE 6: Low confidence ({confidence:.2f}) - skipping compression to preserve all context"
             )
             return self._concatenate_without_compression(documents, max_tokens or self.max_tokens)
-        
-        if confidence < 0.7:
-            sentences_per_doc = self.sentences_per_doc + 2
-            threshold_multiplier = 0.7
+
+        # FASE 6: Moderate confidence uses even more conservative settings
+        if confidence < 0.8:  # Was 0.7
+            sentences_per_doc = self.sentences_per_doc + 3  # Was +2
+            threshold_multiplier = 0.6  # Was 0.7
             logger.info(
-                f"Moderate confidence ({confidence:.2f}) - using conservative compression "
+                f"FASE 6: Moderate confidence ({confidence:.2f}) - using very conservative compression "
                 f"({sentences_per_doc} sentences/doc)"
             )
         else:

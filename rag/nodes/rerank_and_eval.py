@@ -70,11 +70,17 @@ def rerank_and_eval_node(state: MemGPTState, agent) -> Dict[str, Any]:
                 f"Selective reranking stats: {stats['skip_rate_percent']} skip rate"
             )
     else:
-        # Fallback to traditional reranking
-        reranked = agent.reranker.rerank(query, all_results)
+        # CORREÇÃO 6: Fallback para reranking tradicional quando selective_reranker não disponível
+        logger.info("Using traditional reranking (selective_reranker not available)")
+        
+        # Primeiro OpenAI reranker
+        if hasattr(agent, 'reranker') and agent.reranker:
+            reranked = agent.reranker.rerank(query, all_results)
+        else:
+            reranked = all_results
 
-        # Paper-compliant: Cross-Encoder Reranking (System2 - superior accuracy)
-        if agent.cross_encoder and agent.cross_encoder.is_available():
+        # Depois Cross-Encoder se disponível
+        if hasattr(agent, 'cross_encoder') and agent.cross_encoder and agent.cross_encoder.is_available():
             logger.info("Applying Cross-Encoder reranking (System2)")
             reranked = agent.cross_encoder.rerank(query, reranked, top_k=config.RERANK_TOP_K_DEFAULT)
             logger.info(f"Cross-Encoder reranked to top {config.RERANK_TOP_K_DEFAULT} results")

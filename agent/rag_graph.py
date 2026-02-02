@@ -59,6 +59,7 @@ from rag.nodes import (
     synthesize_multi_doc_node,
     verify_response_node,
     should_regenerate,
+    web_search_fallback_node,  # FASE 6.1: Web search fallback
 )
 
 from rag.nodes.update_memory import update_memory_node
@@ -205,9 +206,11 @@ class MemGPTRAGAgent:
                 cross_encoder_reranker=self.cross_encoder,
                 enable_selective=True,
             )
-            logger.info("Selective reranking enabled (optimized)")
+            # CORREÇÃO 6: Log de debug para verificar inicialização
+            logger.info(f"Selective reranking enabled - OpenAI: {self.reranker is not None}, CrossEncoder: {self.cross_encoder is not None}")
         else:
             self.selective_reranker = None
+            logger.warning("Selective reranker disabled - enable_selective_reranking=False in optimization_config")
 
         # DW-GRPO: Dynamic Weight Manager (with database persistence)
         if config.ENABLE_DYNAMIC_WEIGHTS:
@@ -350,6 +353,10 @@ class MemGPTRAGAgent:
             "process_tool_calls",
             lambda s: process_tool_calls_node(s, self),  # type: ignore
         )
+        workflow.add_node(
+            "web_search_fallback",
+            lambda s: web_search_fallback_node(s, self),  # type: ignore
+        )  # FASE 6.1: Web search fallback for low factuality
         workflow.add_node("update_memory", lambda s: update_memory_node(s, self))  # type: ignore
 
         workflow.set_entry_point("receive_input")
@@ -390,17 +397,20 @@ class MemGPTRAGAgent:
         )
 
         # Paper-compliant: Query Refinement Conditional Loop with tool usage
+        # FASE 6.1: Added web_search fallback option
         workflow.add_conditional_edges(
             "verify_response",
             lambda s: decide_next_action(s, self),
             {
                 "refine": "query_refinement",
                 "tools": "process_tool_calls",
+                "web_search": "web_search_fallback",  # FASE 6.1: Web search when factuality POOR
                 "continue": "update_memory",
             },
         )
 
         workflow.add_edge("query_refinement", "retrieve_rag")  # Loop back to retrieval
+        workflow.add_edge("web_search_fallback", "generate_response")  # FASE 6.1: Retry with web results
 
         workflow.add_edge("process_tool_calls", "update_memory")
         workflow.add_edge("update_memory", END)

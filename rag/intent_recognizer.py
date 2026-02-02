@@ -19,15 +19,33 @@ logger = logging.getLogger(__name__)
 
 class IntentRecognizer:
     """Recognizes query intent using LLM"""
-    
-    def __init__(self, llm):
+
+    def __init__(self, llm, embedding_service=None):
         """
         Initialize intent recognizer
-        
+
         Args:
             llm: Language model for classification
+            embedding_service: Optional embedding service for conversation reference detection
         """
         self.llm = llm
+        self.embedding_service = embedding_service
+
+        # Initialize conversation reference detector (advanced detection)
+        self.conv_ref_detector = None
+        if embedding_service:
+            try:
+                from rag.conversation_reference_detector import ConversationReferenceDetector
+                self.conv_ref_detector = ConversationReferenceDetector(
+                    llm=llm,
+                    embedding_service=embedding_service,
+                    semantic_threshold=0.75,
+                    enable_llm_fallback=True
+                )
+                logger.info("ConversationReferenceDetector initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize ConversationReferenceDetector: {e}")
+
         self.intent_descriptions = {
             QueryIntent.QUESTION_ANSWERING: "Direct factual questions requiring specific answers (What is...? How does...?)",
             QueryIntent.SUMMARIZATION: "Requests for summarizing content (Summarize..., Give me an overview...)",
@@ -43,19 +61,45 @@ class IntentRecognizer:
     def recognize(
         self,
         query: str,
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        recall_messages: Optional[List[Dict[str, Any]]] = None
     ) -> IntentAnalysis:
         """
         Recognize query intent
-        
+
         Args:
             query: User query
             conversation_history: Recent conversation for context
-        
+            recall_messages: Messages from recall memory
+
         Returns:
             IntentAnalysis with intent, confidence, and characteristics
         """
         try:
+            # STEP 1: Check if query references conversation (PRIORITY)
+            if self.conv_ref_detector and (conversation_history or recall_messages):
+                conv_ref_result = self.conv_ref_detector.detect(
+                    query=query,
+                    conversation_history=conversation_history or [],
+                    recall_messages=recall_messages
+                )
+
+                if conv_ref_result.is_conversation_reference and conv_ref_result.confidence > 0.6:
+                    logger.info(
+                        f"Detected CLARIFICATION via {conv_ref_result.method} "
+                        f"(confidence={conv_ref_result.confidence:.2f}): {conv_ref_result.reasoning}"
+                    )
+                    return IntentAnalysis(
+                        intent=QueryIntent.CLARIFICATION,
+                        confidence=conv_ref_result.confidence,
+                        reasoning=conv_ref_result.reasoning,
+                        requires_multi_source=False,
+                        requires_reasoning=False,
+                        requires_context=True,  # Needs conversation context
+                        requires_factual_answer=False
+                    )
+
+            # STEP 2: Normal LLM-based intent classification
             prompt = self._build_intent_prompt(conversation_history)
             
             from langchain_core.messages import SystemMessage, HumanMessage

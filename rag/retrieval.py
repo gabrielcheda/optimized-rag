@@ -11,29 +11,64 @@ logger = logging.getLogger(__name__)
 
 
 class HybridRetriever:
-    """Combines multiple retrieval methods for better results"""
-    
+    """
+    FASE 6: Hybrid retrieval with adaptive weights by intent
+
+    Different query intents benefit from different balances between
+    semantic and keyword search. FASE 6 optimizes weights for precision.
+    """
+
+    # FASE 6: Intent-specific weight configurations for precision
+    INTENT_WEIGHTS = {
+        # Factual queries: Higher semantic weight for meaning, keyword for exact terms
+        'question_answering': {'alpha': 0.55, 'beta': 0.40, 'gamma': 0.05},
+        'fact_checking': {'alpha': 0.50, 'beta': 0.45, 'gamma': 0.05},
+
+        # Multi-hop: Need diverse results, semantic important
+        'multi_hop_reasoning': {'alpha': 0.60, 'beta': 0.30, 'gamma': 0.10},
+
+        # Comparison: Need to find both entities
+        'comparison': {'alpha': 0.50, 'beta': 0.45, 'gamma': 0.05},
+
+        # Summarization: Need broad coverage
+        'summarization': {'alpha': 0.65, 'beta': 0.25, 'gamma': 0.10},
+
+        # Search: Keyword more important
+        'search': {'alpha': 0.45, 'beta': 0.50, 'gamma': 0.05},
+
+        # Clarification: Use conversation context (handled separately)
+        'clarification': {'alpha': 0.70, 'beta': 0.20, 'gamma': 0.10},
+
+        # Conversational: Semantic meaning more important
+        'conversational': {'alpha': 0.70, 'beta': 0.20, 'gamma': 0.10},
+
+        # Default/fallback
+        'default': {'alpha': 0.55, 'beta': 0.35, 'gamma': 0.10},
+    }
+
     def __init__(
         self,
         memory_manager,
         document_store,
         agent_id: str,
-        alpha: float = 0.6,
-        beta: float = 0.3,
-        gamma: float = 0.1,
-        weight_manager=None
+        alpha: float = 0.55,     # FASE 6: Adjusted default
+        beta: float = 0.35,      # FASE 6: Adjusted default
+        gamma: float = 0.10,     # FASE 6: Adjusted default
+        weight_manager=None,
+        use_adaptive_weights: bool = True  # FASE 6: Enable adaptive weights
     ):
         """
         Initialize hybrid retriever
-        
+
         Args:
             memory_manager: MemoryManager instance
             document_store: DocumentStore instance
             agent_id: Agent ID for multi-tenant isolation
-            alpha: Weight for semantic search (used if no weight_manager)
-            beta: Weight for keyword search (used if no weight_manager)
-            gamma: Weight for freshness/recency (used if no weight_manager)
+            alpha: Weight for semantic search (used if no adaptive weights)
+            beta: Weight for keyword search (used if no adaptive weights)
+            gamma: Weight for freshness/recency (used if no adaptive weights)
             weight_manager: DynamicWeightManager for adaptive weights (optional)
+            use_adaptive_weights: FASE 6 - Use intent-specific weights
         """
         self.memory_manager = memory_manager
         self.document_store = document_store
@@ -42,9 +77,38 @@ class HybridRetriever:
         self.beta = beta
         self.gamma = gamma
         self.weight_manager = weight_manager
-        
+        self.use_adaptive_weights = use_adaptive_weights
+
         # Try to load BM25
         self.bm25_available = self._check_bm25()
+
+        logger.info(
+            f"FASE 6 HybridRetriever initialized: adaptive_weights={use_adaptive_weights}, "
+            f"default_weights=({alpha:.2f}, {beta:.2f}, {gamma:.2f})"
+        )
+
+    def get_weights_for_intent(self, intent: str) -> tuple:
+        """
+        FASE 6: Get optimal weights based on query intent
+
+        Args:
+            intent: Query intent string (e.g., 'question_answering', 'search')
+
+        Returns:
+            Tuple of (alpha, beta, gamma) weights
+        """
+        # Normalize intent string
+        intent_key = intent.lower().replace(' ', '_') if intent else 'default'
+
+        # Get intent-specific weights or fallback to default
+        weights = self.INTENT_WEIGHTS.get(intent_key, self.INTENT_WEIGHTS['default'])
+
+        logger.debug(
+            f"FASE 6 weights for intent '{intent_key}': "
+            f"alpha={weights['alpha']}, beta={weights['beta']}, gamma={weights['gamma']}"
+        )
+
+        return weights['alpha'], weights['beta'], weights['gamma']
     
     def _check_bm25(self) -> bool:
         """Check if BM25 is available"""
@@ -154,11 +218,12 @@ class HybridRetriever:
         embeddings: List[List[float]],
         query_embedding: List[float],
         top_k: int = 10,
-        documents_metadata: Optional[List[Dict[str, Any]]] = None
+        documents_metadata: Optional[List[Dict[str, Any]]] = None,
+        query_intent: Optional[str] = None  # FASE 6: Intent for adaptive weights
     ) -> List[Dict[str, Any]]:
         """
-        Hybrid search combining semantic, keyword, and temporal relevance (Paper-compliant)
-        
+        FASE 6: Hybrid search with adaptive weights based on query intent
+
         Args:
             query: Search query
             corpus: List of documents
@@ -166,12 +231,23 @@ class HybridRetriever:
             query_embedding: Query embedding
             top_k: Number of results
             documents_metadata: Optional metadata with timestamps for temporal boost
-        
+            query_intent: FASE 6 - Query intent for adaptive weight selection
+
         Returns:
             Hybrid ranked results with temporal awareness
         """
         from datetime import datetime, timedelta
         import config
+
+        # FASE 6: Get adaptive weights based on intent
+        if self.use_adaptive_weights and query_intent:
+            alpha, beta, gamma = self.get_weights_for_intent(query_intent)
+            logger.info(
+                f"FASE 6: Using adaptive weights for '{query_intent}': "
+                f"semantic={alpha:.2f}, keyword={beta:.2f}, temporal={gamma:.2f}"
+            )
+        else:
+            alpha, beta, gamma = self.alpha, self.beta, self.gamma
         
         # Semantic scores
         semantic_scores = []
@@ -215,16 +291,15 @@ class HybridRetriever:
         else:
             temporal_scores = [0.0] * len(corpus)
         
-        # Combine scores with temporal boost
+        # FASE 6: Combine scores with adaptive weights
         hybrid_scores = []
         for i in range(len(corpus)):
             semantic = semantic_scores[i]
             keyword = keyword_scores[i]
             temporal = temporal_scores[i]
-            
-            # Weighted combination: semantic + keyword + temporal
-            # Use dynamic weights if weight_manager available
-            hybrid_score = self.alpha * semantic + self.beta * keyword + self.gamma * temporal
+
+            # FASE 6: Use adaptive weights (alpha, beta, gamma from intent)
+            hybrid_score = alpha * semantic + beta * keyword + gamma * temporal
             
             result = {
                 'content': corpus[i],

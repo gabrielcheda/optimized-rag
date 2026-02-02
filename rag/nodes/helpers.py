@@ -410,6 +410,43 @@ def _is_factual_clarification(query: str, recalled_messages: List[Dict[str, Any]
     return decision
 
 
+def _is_conversation_reference_query(query: str) -> bool:
+    """
+    Check if query references the conversation itself.
+    These queries should ALWAYS use recall memory, never document retrieval.
+
+    Examples:
+        - "qual foi a primeira pergunta?" -> True
+        - "what was the last question?" -> True
+        - "o que eu perguntei antes?" -> True
+        - "what is machine learning?" -> False
+    """
+    query_lower = query.lower()
+
+    # Patterns that indicate reference to conversation itself
+    conversation_ref_patterns = [
+        # Portuguese - ordinal references to conversation
+        "primeira pergunta", "segunda pergunta", "terceira pergunta",
+        "ultima pergunta", "última pergunta", "penultima pergunta",
+        "pergunta anterior",
+        # English - ordinal references
+        "first question", "second question", "third question",
+        "last question", "previous question",
+        # Portuguese - meta references
+        "o que perguntei", "o que eu perguntei", "o que voce disse",
+        "o que você disse", "o que falamos", "o que conversamos",
+        "sobre o que falamos", "nossa conversa",
+        # English - meta references
+        "what did i ask", "what i asked", "what you said",
+        "what we talked", "what we discussed", "our conversation",
+        # General recall patterns
+        "repita", "repetir", "pode repetir", "repeat that",
+        "said earlier", "mentioned before", "falou antes", "mencionou antes"
+    ]
+
+    return any(pattern in query_lower for pattern in conversation_ref_patterns)
+
+
 def should_retrieve_documents(
     query: str, intent, recalled_messages: List[Dict[str, Any]]
 ) -> bool:
@@ -424,6 +461,16 @@ def should_retrieve_documents(
     Returns:
         True if documents needed, False if recall is sufficient
     """
+    # RULE 0 (HIGHEST PRIORITY): Query references conversation itself
+    # These MUST use recall only - document retrieval would be nonsensical
+    if recalled_messages and len(recalled_messages) > 0:
+        if _is_conversation_reference_query(query):
+            logger.info(
+                f"Document retrieval: NO (query references conversation - "
+                f"using recall memory with {len(recalled_messages)} messages)"
+            )
+            return False
+
     if not recalled_messages or len(recalled_messages) == 0:
         logger.info("Document retrieval: YES (no recall history)")
         return True
@@ -431,7 +478,8 @@ def should_retrieve_documents(
     if intent and intent.value.lower() in ["chitchat", "greeting"]:
         logger.info(f"Document retrieval: NO (intent={intent}, recall sufficient)")
         return False
-    
+
+    # RULE 1: CLARIFICATION intent with recall - prefer recall memory
     if intent and intent.value.lower() == "clarification":
         needs_documents = _is_factual_clarification(query, recalled_messages)
         

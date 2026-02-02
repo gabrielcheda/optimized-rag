@@ -117,7 +117,7 @@ class SelfRAGEvaluator:
                 HumanMessage(content=prompt)
             ]
             response = self.llm.invoke(messages)
-            
+
             # Parse numbered list
             claims = []
             for line in response.content.split('\n'):
@@ -127,11 +127,80 @@ class SelfRAGEvaluator:
                     claim = line.split('.', 1)[-1].strip() if '.' in line else line[1:].strip()
                     if claim:
                         claims.append(claim)
-            
+
             return claims if claims else [answer]  # Fallback to full answer
         except Exception as e:
             logger.error(f"Claim extraction failed: {e}")
             return [answer]
+
+    def _verify_sentences(self, answer: str) -> Dict[str, Any]:
+        """
+        FASE 6: Sentence-level verification for citation presence
+
+        Checks each sentence for proper citation to detect uncited claims.
+
+        Args:
+            answer: Generated answer text
+
+        Returns:
+            Dict with sentence verification stats
+        """
+        import re
+
+        # Split into sentences
+        sentences = [s.strip() for s in re.split(r'[.!?]', answer) if s.strip()]
+
+        if not sentences:
+            return {
+                'total_sentences': 0,
+                'cited_sentences': 0,
+                'uncited_sentences': 0,
+                'uncited_ratio': 0.0,
+                'uncited_list': []
+            }
+
+        # Check each sentence for citations [N]
+        cited_sentences = []
+        uncited_sentences = []
+
+        for sentence in sentences:
+            # Skip very short sentences (likely not factual claims)
+            if len(sentence.split()) < 4:
+                continue
+
+            # Skip meta-sentences (not factual claims)
+            meta_patterns = [
+                r'^(based on|according to|the document|i don\'t|i cannot|não tenho|com base)',
+                r'^(in summary|to summarize|em resumo|para resumir)',
+                r'^(note:|obs:|importante:)',
+            ]
+            is_meta = any(re.match(p, sentence.lower()) for p in meta_patterns)
+            if is_meta:
+                continue
+
+            # Check for citation
+            has_citation = bool(re.search(r'\[\d+\]', sentence))
+
+            if has_citation:
+                cited_sentences.append(sentence)
+            else:
+                uncited_sentences.append(sentence)
+
+        total_factual = len(cited_sentences) + len(uncited_sentences)
+        uncited_ratio = len(uncited_sentences) / total_factual if total_factual > 0 else 0.0
+
+        logger.info(
+            f"FASE 6 sentence check: {len(cited_sentences)} cited, "
+            f"{len(uncited_sentences)} uncited ({uncited_ratio:.2f} ratio)"
+        )
+
+        return {
+            'total_sentences': total_factual,
+            'cited_sentences': len(cited_sentences),
+            'uncited_sentences': len(uncited_sentences),
+            'uncited_ratio': uncited_ratio,
+            'uncited_list': uncited_sentences[:5]  # First 5 for debugging
+        }
     
     def _find_supporting_evidence(
         self,
@@ -205,27 +274,43 @@ class SelfRAGEvaluator:
         retrieved_docs: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Evaluate if answer is supported by documents with claim-level verification
-        
+        FASE 6: Multi-granularity verification for maximum precision
+
+        Verification levels:
+        1. Claim-level: Individual factual claims
+        2. Sentence-level: Each sentence for citation presence
+        3. Document-level: Overall alignment with sources
+
         Args:
             query: User query
             answer: Generated answer
             retrieved_docs: Retrieved documents
-        
+
         Returns:
             Evaluation with support, claims verification, and hallucination detection
         """
-        # Extract individual claims from answer
+        # FASE 6: Multi-granularity verification
+
+        # LEVEL 1: Claim-level verification
         claims = self._extract_claims(answer)
         logger.info(f"Extracted {len(claims)} claims from answer")
 
-        MAX_CLAIMS_TO_VERIFY = 5
+        # FASE 6: Increased limit from 5 to 10 for better coverage
+        MAX_CLAIMS_TO_VERIFY = 10
         if len(claims) > MAX_CLAIMS_TO_VERIFY:
             logger.info(
                 f"Limiting verification to {MAX_CLAIMS_TO_VERIFY} claims "
                 f"(skipping {len(claims) - MAX_CLAIMS_TO_VERIFY})"
             )
-            claims = claims[:MAX_CLAIMS_TO_VERIFY]
+            # FASE 6: Prioritize claims without citations (higher risk)
+            claims_without_citations = [c for c in claims if '[' not in c]
+            claims_with_citations = [c for c in claims if '[' in c]
+            # Verify uncited claims first, then cited ones
+            prioritized_claims = claims_without_citations[:MAX_CLAIMS_TO_VERIFY]
+            remaining_slots = MAX_CLAIMS_TO_VERIFY - len(prioritized_claims)
+            if remaining_slots > 0:
+                prioritized_claims.extend(claims_with_citations[:remaining_slots])
+            claims = prioritized_claims
 
         claim_verifications = []
         for claim in claims:
@@ -240,7 +325,10 @@ class SelfRAGEvaluator:
                 'confidence': support['confidence'],
                 'evidence': support['text']
             })
-        
+
+        # LEVEL 2: Sentence-level verification (FASE 6)
+        sentence_stats = self._verify_sentences(answer)
+
         if claim_verifications:
             supported_count = sum(1 for c in claim_verifications if c['supported'])
             support_ratio = supported_count / len(claim_verifications)
@@ -248,9 +336,19 @@ class SelfRAGEvaluator:
         else:
             support_ratio = 0.0
             avg_confidence = 0.0
-        
+
+        # FASE 6: Stricter thresholds for hallucination detection
         is_supported = support_ratio >= MIN_SUPPORT_RATIO
-        has_hallucination = support_ratio < 0.5
+        # FASE 6: Lower threshold (0.6 instead of 0.5) - more sensitive to hallucination
+        has_hallucination = support_ratio < 0.6
+
+        # FASE 6: Additional hallucination check - sentences without citations
+        if sentence_stats['uncited_ratio'] > 0.5:
+            logger.warning(
+                f"FASE 6: High uncited sentence ratio ({sentence_stats['uncited_ratio']:.2f}) - "
+                "potential hallucination risk"
+            )
+            has_hallucination = True
 
         docs_content = "\n\n".join([
             doc.get('content', '')[:1000]
@@ -295,20 +393,23 @@ Evaluation:"""
             
             response = self.llm.invoke(messages)
             evaluation = self._parse_answer_evaluation(response.content)
-            
+
             evaluation['is_supported'] = is_supported
             evaluation['has_hallucination'] = has_hallucination
             evaluation['support_ratio'] = support_ratio
             evaluation['avg_confidence'] = avg_confidence
             evaluation['claims_verified'] = claim_verifications
-            
+            # FASE 6: Include sentence-level stats
+            evaluation['sentence_stats'] = sentence_stats
+
             logger.info(
                 f"Answer eval: supported={evaluation['is_supported']}, "
                 f"hallucination={evaluation['has_hallucination']}, "
                 f"support_ratio={support_ratio:.1%}, "
-                f"claims={len(claims)}"
+                f"claims={len(claims)}, "
+                f"uncited_sentences={sentence_stats['uncited_sentences']}"
             )
-            
+
             return evaluation
         
         except Exception as e:
@@ -376,7 +477,9 @@ Evaluation:"""
             elif line.startswith("REASONING:"):
                 reasoning = line.replace("REASONING:", "").strip()
         
-        should_reretrieve = (not is_relevant) and (confidence < 0.3)
+        # CORREÇÃO 7: Threshold reduzido de 0.3 para 0.4 e lógica menos rigorosa
+        # Só re-retrieve se confidence for muito baixa OU se marcado como não relevante
+        should_reretrieve = (not is_relevant and confidence < 0.4) or (confidence < 0.3)
 
         return {
             "is_relevant": is_relevant,
